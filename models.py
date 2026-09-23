@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, DateTime, JSON
+from sqlalchemy import Column, BigInteger, String, DateTime
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from database import Base
@@ -8,7 +9,7 @@ class Scan(Base):
     __tablename__ = "scan"
 
     id = Column(
-        Integer,
+        BigInteger,
         primary_key=True,
         autoincrement=True
     )
@@ -21,7 +22,7 @@ class Scan(Base):
     )
 
     discussion_data = Column(
-        JSON,
+        JSONB,
         nullable=False
     )
 
