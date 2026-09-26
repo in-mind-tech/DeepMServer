@@ -16,6 +16,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from groq import Groq
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
@@ -36,7 +37,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="Deep Matching API",
     description="API serveur de l'application Deep Matching",
-    version="3.3.0",
+    version="3.4.0",
 )
 
 
@@ -121,8 +122,8 @@ SUPPORTED_LANGUAGES = {
 # ============================================================
 # CATÉGORIES INTERNES DE TENSION
 #
-# Ces clés servent uniquement au serveur et à PostgreSQL.
-# Elles ne doivent jamais être affichées directement.
+# Ces clés sont utilisées par l'IA et PostgreSQL.
+# Elles ne sont jamais envoyées telles quelles à l'utilisateur.
 # ============================================================
 
 ALLOWED_TENSIONS = {
@@ -146,212 +147,85 @@ ALLOWED_TENSIONS = {
 
 
 # ============================================================
-# TRADUCTIONS DES TENSIONS
+# TRADUCTION DES TENSIONS
 # ============================================================
 
 TENSION_LABELS = {
 
     "fr": {
-        "sexuality":
-            "Sexualité",
-
-        "personality":
-            "Personnalité et comportement",
-
-        "religion":
-            "Religion et convictions",
-
-        "conflict_management":
-            "Gestion des conflits",
-
-        "children":
-            "Projet parental et enfants",
-
-        "fidelity":
-            "Fidélité et confiance",
-
-        "relationship_model":
-            "Vision de la relation",
-
-        "marriage":
-            "Vision du mariage",
-
-        "finances":
-            "Gestion financière",
-
-        "family":
-            "Famille et entourage",
-
-        "lifestyle":
-            "Mode de vie",
-
-        "independence":
-            "Indépendance et espace personnel",
-
-        "communication":
-            "Communication dans le couple",
-
-        "values":
-            "Valeurs et convictions",
-
-        "future_projects":
-            "Projets de vie",
-
-        "other":
-            "Autres différences importantes",
+        "sexuality": "Sexualité",
+        "personality": "Personnalité et comportement",
+        "religion": "Religion et convictions",
+        "conflict_management": "Gestion des conflits",
+        "children": "Projet parental et enfants",
+        "fidelity": "Fidélité et confiance",
+        "relationship_model": "Vision de la relation",
+        "marriage": "Vision du mariage",
+        "finances": "Gestion financière",
+        "family": "Famille et entourage",
+        "lifestyle": "Mode de vie",
+        "independence": "Indépendance et espace personnel",
+        "communication": "Communication dans le couple",
+        "values": "Valeurs et convictions",
+        "future_projects": "Projets de vie",
+        "other": "Autres différences importantes",
     },
-
 
     "en": {
-        "sexuality":
-            "Sexuality",
-
-        "personality":
-            "Personality and behaviour",
-
-        "religion":
-            "Religion and beliefs",
-
-        "conflict_management":
-            "Conflict management",
-
-        "children":
-            "Parenthood and children",
-
-        "fidelity":
-            "Fidelity and trust",
-
-        "relationship_model":
-            "Relationship expectations",
-
-        "marriage":
-            "Views on marriage",
-
-        "finances":
-            "Financial management",
-
-        "family":
-            "Family and social environment",
-
-        "lifestyle":
-            "Lifestyle",
-
-        "independence":
-            "Independence and personal space",
-
-        "communication":
-            "Communication in the relationship",
-
-        "values":
-            "Values and beliefs",
-
-        "future_projects":
-            "Life plans",
-
-        "other":
-            "Other important differences",
+        "sexuality": "Sexuality",
+        "personality": "Personality and behaviour",
+        "religion": "Religion and beliefs",
+        "conflict_management": "Conflict management",
+        "children": "Parenthood and children",
+        "fidelity": "Fidelity and trust",
+        "relationship_model": "Relationship expectations",
+        "marriage": "Views on marriage",
+        "finances": "Financial management",
+        "family": "Family and social environment",
+        "lifestyle": "Lifestyle",
+        "independence": "Independence and personal space",
+        "communication": "Communication in the relationship",
+        "values": "Values and beliefs",
+        "future_projects": "Life plans",
+        "other": "Other important differences",
     },
-
 
     "es": {
-        "sexuality":
-            "Sexualidad",
-
-        "personality":
-            "Personalidad y comportamiento",
-
-        "religion":
-            "Religión y convicciones",
-
-        "conflict_management":
-            "Gestión de conflictos",
-
-        "children":
-            "Proyecto parental e hijos",
-
-        "fidelity":
-            "Fidelidad y confianza",
-
-        "relationship_model":
-            "Visión de la relación",
-
-        "marriage":
-            "Visión del matrimonio",
-
-        "finances":
-            "Gestión financiera",
-
-        "family":
-            "Familia y entorno",
-
-        "lifestyle":
-            "Estilo de vida",
-
-        "independence":
-            "Independencia y espacio personal",
-
-        "communication":
-            "Comunicación en la pareja",
-
-        "values":
-            "Valores y convicciones",
-
-        "future_projects":
-            "Proyectos de vida",
-
-        "other":
-            "Otras diferencias importantes",
+        "sexuality": "Sexualidad",
+        "personality": "Personalidad y comportamiento",
+        "religion": "Religión y convicciones",
+        "conflict_management": "Gestión de conflictos",
+        "children": "Proyecto parental e hijos",
+        "fidelity": "Fidelidad y confianza",
+        "relationship_model": "Visión de la relación",
+        "marriage": "Visión del matrimonio",
+        "finances": "Gestión financiera",
+        "family": "Familia y entorno",
+        "lifestyle": "Estilo de vida",
+        "independence": "Independencia y espacio personal",
+        "communication": "Comunicación en la pareja",
+        "values": "Valores y convicciones",
+        "future_projects": "Proyectos de vida",
+        "other": "Otras diferencias importantes",
     },
 
-
     "pt": {
-        "sexuality":
-            "Sexualidade",
-
-        "personality":
-            "Personalidade e comportamento",
-
-        "religion":
-            "Religião e convicções",
-
-        "conflict_management":
-            "Gestão de conflitos",
-
-        "children":
-            "Projeto parental e filhos",
-
-        "fidelity":
-            "Fidelidade e confiança",
-
-        "relationship_model":
-            "Visão do relacionamento",
-
-        "marriage":
-            "Visão do casamento",
-
-        "finances":
-            "Gestão financeira",
-
-        "family":
-            "Família e convívio social",
-
-        "lifestyle":
-            "Estilo de vida",
-
-        "independence":
-            "Independência e espaço pessoal",
-
-        "communication":
-            "Comunicação no relacionamento",
-
-        "values":
-            "Valores e convicções",
-
-        "future_projects":
-            "Projetos de vida",
-
-        "other":
-            "Outras diferenças importantes",
+        "sexuality": "Sexualidade",
+        "personality": "Personalidade e comportamento",
+        "religion": "Religião e convicções",
+        "conflict_management": "Gestão de conflitos",
+        "children": "Projeto parental e filhos",
+        "fidelity": "Fidelidade e confiança",
+        "relationship_model": "Visão do relacionamento",
+        "marriage": "Visão do casamento",
+        "finances": "Gestão financeira",
+        "family": "Família e convívio social",
+        "lifestyle": "Estilo de vida",
+        "independence": "Independência e espaço pessoal",
+        "communication": "Comunicação no relacionamento",
+        "values": "Valores e convicções",
+        "future_projects": "Projetos de vida",
+        "other": "Outras diferenças importantes",
     },
 }
 
@@ -388,7 +262,7 @@ def translate_tensions(
         TENSION_LABELS["fr"],
     )
 
-    translated = []
+    translated: List[str] = []
 
     for tension in tensions:
 
@@ -531,7 +405,7 @@ def extract_general_information(
 
 
 # ============================================================
-# CONSTRUCTION DE LA RÉPONSE SELON L'UTILISATEUR
+# CONSTRUCTION DE LA RÉPONSE
 # ============================================================
 
 def build_viewer_result(
@@ -544,16 +418,13 @@ def build_viewer_result(
         language
     )
 
-    translated_tensions = (
-        translate_tensions(
-            result.tensions or [],
-            language,
-        )
+    translated_tensions = translate_tensions(
+        result.tensions or [],
+        language,
     )
 
     # --------------------------------------------------------
-    # PROFIL A
-    # = utilisateur qui a effectué le scan
+    # PROFIL A = utilisateur qui a effectué le scan
     # --------------------------------------------------------
 
     if (
@@ -563,15 +434,10 @@ def build_viewer_result(
 
         return {
             "success": True,
-
-            "match_id":
-                result.match_id,
-
-            "language":
-                language,
+            "match_id": result.match_id,
+            "language": language,
 
             "compatibility": {
-
                 "my_profile_to_their_expectations":
                     result.match_a_to_b,
 
@@ -584,10 +450,9 @@ def build_viewer_result(
         }
 
     # --------------------------------------------------------
-    # PROFIL B
-    # = propriétaire du QR
+    # PROFIL B = propriétaire du QR
     #
-    # Les scores sont inversés.
+    # Les pourcentages sont inversés.
     # --------------------------------------------------------
 
     if (
@@ -597,15 +462,10 @@ def build_viewer_result(
 
         return {
             "success": True,
-
-            "match_id":
-                result.match_id,
-
-            "language":
-                language,
+            "match_id": result.match_id,
+            "language": language,
 
             "compatibility": {
-
                 "my_profile_to_their_expectations":
                     result.match_b_to_a,
 
@@ -638,7 +498,7 @@ def root():
         "service":
             "deep-matching-api",
         "version":
-            "3.3.0",
+            "3.4.0",
         "groq_model":
             GROQ_MODEL,
     }
@@ -658,7 +518,8 @@ def health():
             "deep-matching-api",
         "groq_configured":
             bool(GROQ_API_KEY),
-        "version": "3.3.0",
+        "version":
+            "3.4.0",
     }
 
 
@@ -685,8 +546,7 @@ def create_scan(
     )
 
     # --------------------------------------------------------
-    # Profil déjà présent :
-    # mise à jour des données.
+    # Profil existant : mise à jour
     # --------------------------------------------------------
 
     if existing:
@@ -735,9 +595,7 @@ def create_scan(
     # --------------------------------------------------------
 
     scan = Scan(
-        idprofile=(
-            payload.idprofile
-        ),
+        idprofile=payload.idprofile,
         discussion_data=(
             payload.discussion_data
         ),
@@ -807,7 +665,6 @@ def profile_exists(
     return {
         "idprofile":
             idprofile,
-
         "exists":
             profile is not None,
     }
@@ -816,8 +673,9 @@ def profile_exists(
 # ============================================================
 # GET PROFILE
 #
-# À protéger/supprimer avant production publique :
+# ATTENTION :
 # discussion_data contient les réponses privées Cupid.
+# Cet endpoint devra être protégé ou supprimé avant production.
 # ============================================================
 
 @app.get(
@@ -990,7 +848,6 @@ def verify_match(
     )
 
     return {
-
         "ready": (
             my_profile is not None
             and scanned_profile is not None
@@ -1016,13 +873,13 @@ def build_match_prompt(
     return f"""
 Tu es le moteur d'analyse sémantique de Deep Matching.
 
-Tu compares deux questionnaires relationnels.
-
 ============================================================
 OBJECTIF
 ============================================================
 
-Tu dois mesurer deux compatibilités directionnelles.
+Tu compares deux questionnaires relationnels.
+
+Tu dois produire deux scores directionnels indépendants.
 
 A_TO_B :
 
@@ -1036,9 +893,7 @@ Dans quelle mesure ce que la personne B déclare être
 correspond-il à ce que la personne A déclare rechercher
 chez un partenaire ?
 
-Les deux scores sont indépendants.
-
-Ils peuvent donc être très différents.
+Les deux scores peuvent être différents.
 
 ============================================================
 SIGNIFICATION DES SCORES
@@ -1046,10 +901,9 @@ SIGNIFICATION DES SCORES
 
 Les scores sont compris entre 0 et 100.
 
-Ils représentent uniquement la correspondance entre :
-
-- les caractéristiques déclarées d'une personne ;
-- les attentes déclarées de l'autre.
+Ils mesurent uniquement la correspondance entre les
+caractéristiques déclarées d'une personne et les attentes
+déclarées de l'autre.
 
 Ils ne représentent PAS :
 
@@ -1065,9 +919,9 @@ Ils ne représentent PAS :
 IMPORTANCE DES CRITÈRES
 ============================================================
 
-Toutes les réponses ne doivent PAS avoir le même poids.
+Toutes les réponses n'ont pas le même poids.
 
-Une simple préférence doit avoir une influence limitée.
+Une préférence légère doit avoir une influence limitée.
 
 Une attente importante doit avoir une influence plus forte.
 
@@ -1083,57 +937,68 @@ Une condition explicitement présentée comme :
 doit avoir une influence très importante sur la direction
 concernée.
 
+Ne transforme toutefois pas une préférence ordinaire en
+condition absolue.
+
 ============================================================
 ORIENTATION ET TYPE DE PARTENAIRE
 ============================================================
 
-Analyse attentivement :
+Analyse uniquement ce qui est explicitement déclaré
+concernant :
 
-- le genre déclaré ;
-- l'orientation déclarée ;
+- le genre ;
+- l'orientation ;
 - le genre recherché ;
 - le type de partenaire recherché.
 
-Si les déclarations montrent clairement que la personne A
-ne correspond pas au type de partenaire recherché par B,
-cela doit fortement réduire A_TO_B.
+Si les déclarations montrent clairement que A ne correspond
+pas au type de partenaire recherché par B, cela doit fortement
+réduire A_TO_B.
 
-Si B ne correspond pas au type de partenaire recherché
-par A, cela doit fortement réduire B_TO_A.
+Si B ne correspond pas au type de partenaire recherché par A,
+cela doit fortement réduire B_TO_A.
 
-Ne suppose jamais une orientation ou une préférence qui
-n'a pas été explicitement exprimée.
+N'invente jamais une orientation, une préférence ou une
+caractéristique absente du questionnaire.
 
 ============================================================
-EXIGENCES EXPLICITES
+CRITÈRES IMPORTANTS
 ============================================================
 
-Lorsqu'une personne exprime clairement une condition
-importante concernant notamment :
+Prends notamment en compte, lorsqu'ils sont effectivement
+présents dans les réponses :
 
-- religion ;
+- sexualité ;
+- religion et convictions ;
 - enfants ;
 - fidélité ;
 - mariage ;
-- sexualité ;
 - modèle relationnel ;
-- valeurs ;
+- finances ;
+- famille ;
+- communication ;
+- gestion des conflits ;
+- indépendance ;
+- personnalité et comportement ;
 - mode de vie ;
-- projets futurs ;
+- valeurs ;
+- projets futurs.
 
-et que l'autre profil est manifestement incompatible avec
-cette condition, cette incompatibilité doit avoir une
-influence importante sur le score correspondant.
+Lorsqu'une attente clairement importante entre en conflit avec
+la caractéristique déclarée de l'autre personne, elle doit
+influencer principalement le score directionnel correspondant.
 
 ============================================================
 TENSIONS
 ============================================================
 
-Les tensions ne doivent jamais révéler une réponse précise.
+Les tensions servent seulement à signaler les grands thèmes
+sur lesquels les deux personnes pourraient souhaiter discuter.
 
-Retourne uniquement des catégories générales.
+Elles ne constituent pas une prédiction de conflit.
 
-Valeurs autorisées :
+Retourne uniquement les clés suivantes :
 
 sexuality
 personality
@@ -1152,40 +1017,8 @@ values
 future_projects
 other
 
-============================================================
-SEXUALITY
-============================================================
-
-La catégorie "sexuality" peut représenter des différences
-importantes concernant notamment :
-
-- orientation ;
-- attentes intimes ;
-- compatibilité sexuelle déclarée ;
-- convictions liées à la sexualité.
-
-Ne révèle jamais laquelle de ces réponses précises a été
-donnée.
-
-============================================================
-PERSONALITY
-============================================================
-
-La catégorie "personality" peut représenter des différences
-concernant notamment :
-
-- tempérament ;
-- comportement ;
-- caractère ;
-- calme ;
-- timidité ;
-- autorité ;
-- indépendance ;
-- conception des rôles relationnels ;
-- certaines convictions comportementales.
-
-Ne qualifie jamais une personne de dangereuse ou violente
-sur la seule base du questionnaire.
+N'ajoute une catégorie que lorsqu'une différence ou une
+attente réellement pertinente est présente.
 
 ============================================================
 CONFIDENTIALITÉ
@@ -1193,17 +1026,25 @@ CONFIDENTIALITÉ
 
 Les réponses Cupid sont privées.
 
-Ne reproduis jamais une réponse exacte.
+Ne reproduis jamais une réponse exacte dans la sortie.
 
-Ne produis jamais une tension suffisamment détaillée pour
-permettre à l'autre utilisateur de reconstruire une réponse
-privée.
+Ne donne aucune explication permettant à l'autre personne de
+reconstituer une réponse privée.
+
+La sortie ne doit contenir :
+
+- aucun résumé ;
+- aucune liste de points communs ;
+- aucune liste détaillée de différences ;
+- aucune citation ;
+- aucune justification textuelle.
 
 ============================================================
-FORMAT
+FORMAT OBLIGATOIRE
 ============================================================
 
-Retourne UNIQUEMENT un JSON valide :
+Retourne UNIQUEMENT un objet JSON valide exactement de cette
+forme :
 
 {{
     "a_to_b": 82,
@@ -1214,12 +1055,16 @@ Retourne UNIQUEMENT un JSON valide :
     ]
 }}
 
+a_to_b doit être un nombre entre 0 et 100.
+
+b_to_a doit être un nombre entre 0 et 100.
+
+tensions doit être une liste contenant uniquement les clés
+autorisées.
+
 Aucun Markdown.
-
 Aucun commentaire.
-
 Aucun texte avant le JSON.
-
 Aucun texte après le JSON.
 
 ============================================================
@@ -1259,7 +1104,7 @@ def analyze_match(
 ):
 
     # --------------------------------------------------------
-    # GROQ
+    # Vérification GROQ
     # --------------------------------------------------------
 
     if (
@@ -1276,7 +1121,7 @@ def analyze_match(
         )
 
     # --------------------------------------------------------
-    # AUTO MATCH
+    # Empêcher l'auto-match
     # --------------------------------------------------------
 
     if (
@@ -1293,7 +1138,7 @@ def analyze_match(
         )
 
     # --------------------------------------------------------
-    # PROFILS
+    # Récupération des profils
     # --------------------------------------------------------
 
     profile_a = get_profile_or_404(
@@ -1325,7 +1170,7 @@ def analyze_match(
     )
 
     # --------------------------------------------------------
-    # PROMPT
+    # Construction du prompt
     # --------------------------------------------------------
 
     prompt = build_match_prompt(
@@ -1334,7 +1179,7 @@ def analyze_match(
     )
 
     # --------------------------------------------------------
-    # APPEL GROQ
+    # GROQ
     # --------------------------------------------------------
 
     try:
@@ -1350,14 +1195,11 @@ def analyze_match(
             .chat
             .completions
             .create(
-
                 model=GROQ_MODEL,
 
                 messages=[
                     {
-                        "role":
-                            "system",
-
+                        "role": "system",
                         "content": (
                             "Analyse les deux profils "
                             "relationnels. "
@@ -1366,25 +1208,20 @@ def analyze_match(
                         ),
                     },
                     {
-                        "role":
-                            "user",
-
-                        "content":
-                            prompt,
+                        "role": "user",
+                        "content": prompt,
                     },
                 ],
 
                 temperature=0.1,
 
                 response_format={
-                    "type":
-                        "json_object"
+                    "type": "json_object"
                 },
             )
         )
 
         if not completion.choices:
-
             raise ValueError(
                 "Aucun résultat Groq"
             )
@@ -1397,14 +1234,27 @@ def analyze_match(
         )
 
         if not content:
-
             raise ValueError(
                 "Réponse Groq vide"
             )
 
+        print(
+            "[GROQ][RAW] "
+            f"{content}",
+            flush=True,
+        )
+
         result = json.loads(
             content
         )
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+            raise ValueError(
+                "Format JSON Groq invalide"
+            )
 
     except Exception as e:
 
@@ -1461,7 +1311,6 @@ def analyze_match(
         )
     )
 
-
     # ========================================================
     # TENSIONS INTERNES
     # ========================================================
@@ -1492,11 +1341,9 @@ def analyze_match(
                 and tension
                 not in tensions
             ):
-
                 tensions.append(
                     tension
                 )
-
 
     # ========================================================
     # MATCH ID
@@ -1509,13 +1356,11 @@ def analyze_match(
         .upper()
     )
 
-
     # ========================================================
-    # RESULTAT TEMPORAIRE
+    # RÉSULTAT DU MATCH
     # ========================================================
 
     match_result = MatchResult(
-
         match_id=match_id,
 
         profile_a_id=(
@@ -1534,15 +1379,13 @@ def analyze_match(
             match_b_to_a
         ),
 
-        # Clés techniques conservées en base
         tensions=tensions,
 
         summary=None,
     )
 
-
     # ========================================================
-    # INFORMATIONS STATISTIQUES
+    # INFORMATIONS POUR HISTORIQUE
     # ========================================================
 
     info_a = (
@@ -1556,7 +1399,6 @@ def analyze_match(
             data_b
         )
     )
-
 
     # ========================================================
     # HISTORIQUE
@@ -1596,10 +1438,10 @@ def analyze_match(
             match_b_to_a
         ),
 
-        # Clés indépendantes de la langue.
+        # On conserve uniquement les catégories,
+        # jamais les réponses Cupid.
         conflit=tensions,
     )
-
 
     # ========================================================
     # ENREGISTREMENT
@@ -1631,6 +1473,8 @@ def analyze_match(
             flush=True,
         )
 
+        traceback.print_exc()
+
         raise HTTPException(
             status_code=500,
             detail=(
@@ -1640,29 +1484,91 @@ def analyze_match(
             ),
         )
 
-
     # ========================================================
     # RÉPONSE POUR LE SCANNEUR
-    #
-    # Sa propre langue est utilisée.
     # ========================================================
 
-    return build_viewer_result(
+    response = build_viewer_result(
         match_result,
         payload.my_profile_id,
         payload.language,
     )
 
+    print(
+        "[MATCH][RESPONSE] "
+        f"{response}",
+        flush=True,
+    )
+
+    return response
+
 
 # ============================================================
-# RECUPERER UN MATCH PRÉCIS
+# DERNIER MATCH D'UN PROFIL
+#
+# IMPORTANT :
+# Cette route ne se trouve plus sous :
+#
+# /api/v1/match/latest/...
+#
+# Cela évite la collision avec :
+#
+# /api/v1/match/{match_id}/{viewer_profile_id}
+# ============================================================
+
+@app.get(
+    "/api/v1/profile/{viewer_profile_id}/latest-match"
+)
+def get_latest_match(
+    viewer_profile_id: str,
+    language: str = Query(
+        default="fr",
+    ),
+    db: Session = Depends(get_db),
+):
+
+    result = (
+        db.query(MatchResult)
+        .filter(
+            or_(
+                MatchResult.profile_a_id
+                == viewer_profile_id,
+
+                MatchResult.profile_b_id
+                == viewer_profile_id,
+            )
+        )
+        .order_by(
+            MatchResult.created_at.desc(),
+            MatchResult.id.desc(),
+        )
+        .first()
+    )
+
+    if result is None:
+
+        return {
+            "success": True,
+            "found": False,
+        }
+
+    viewer_result = build_viewer_result(
+        result,
+        viewer_profile_id,
+        language,
+    )
+
+    viewer_result["found"] = True
+
+    return viewer_result
+
+
+# ============================================================
+# RÉCUPÉRER UN MATCH PRÉCIS
 #
 # Exemple :
 #
-# /api/v1/match/DM-XXX/DMP-XXX?language=en
-#
-# Le serveur détermine automatiquement si le viewer
-# est A ou B et inverse les pourcentages si nécessaire.
+# /api/v1/match/DM-XXX/DMP-XXX?language=fr
 # ============================================================
 
 @app.get(
@@ -1698,68 +1604,3 @@ def get_match_result(
         viewer_profile_id,
         language,
     )
-
-
-# ============================================================
-# DERNIER MATCH POUR UN PROFIL
-#
-# Cet endpoint est important pour le propriétaire du QR.
-#
-# Pendant que son QR est affiché, Flutter peut demander :
-#
-# /api/v1/match/latest/DMP-XXX?language=en
-#
-# Si quelqu'un vient de scanner son QR et qu'un match
-# a été calculé, il récupère le résultat.
-# ============================================================
-
-@app.get(
-    "/api/v1/match/latest/{viewer_profile_id}"
-)
-def get_latest_match(
-    viewer_profile_id: str,
-    language: str = Query(
-        default="fr",
-    ),
-    db: Session = Depends(get_db),
-):
-
-    result = (
-        db.query(MatchResult)
-        .filter(
-            (
-                MatchResult.profile_a_id
-                == viewer_profile_id
-            )
-            |
-            (
-                MatchResult.profile_b_id
-                == viewer_profile_id
-            )
-        )
-        .order_by(
-            MatchResult.created_at.desc()
-        )
-        .first()
-    )
-
-    if result is None:
-
-        return {
-            "success": True,
-            "found": False,
-        }
-
-    viewer_result = (
-        build_viewer_result(
-            result,
-            viewer_profile_id,
-            language,
-        )
-    )
-
-    viewer_result[
-        "found"
-    ] = True
-
-    return viewer_result
