@@ -1,16 +1,25 @@
 import json
 import os
 import traceback
-from typing import Any, Dict, Optional
+import uuid
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from typing import Any, Dict, List, Optional
+
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    status,
+)
+
 from fastapi.middleware.cors import CORSMiddleware
 from groq import Groq
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
-from models import Scan
+from models import Scan, MatchResult, Historique
 
 
 # ============================================================
@@ -27,7 +36,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="Deep Matching API",
     description="API serveur de l'application Deep Matching",
-    version="3.1.1",
+    version="3.3.0",
 )
 
 
@@ -50,18 +59,30 @@ app.add_middleware(
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
+GROQ_MODEL = os.getenv(
+    "GROQ_MODEL",
+    "openai/gpt-oss-120b",
+)
+
 groq_client: Optional[Groq] = None
 
 if GROQ_API_KEY:
-    groq_client = Groq(api_key=GROQ_API_KEY)
+    groq_client = Groq(
+        api_key=GROQ_API_KEY
+    )
 
 
 # ============================================================
-# PYDANTIC MODELS
+# PYDANTIC
 # ============================================================
 
 class ScanCreate(BaseModel):
-    idprofile: str = Field(..., min_length=1, max_length=100)
+    idprofile: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+    )
+
     discussion_data: Dict[str, Any]
 
 
@@ -70,30 +91,346 @@ class ScanUpdate(BaseModel):
 
 
 class MatchRequest(BaseModel):
-    my_profile_id: str = Field(..., min_length=1, max_length=100)
-    scanned_profile_id: str = Field(..., min_length=1, max_length=100)
+    my_profile_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+    )
+
+    scanned_profile_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+    )
+
     language: str = "fr"
 
 
 # ============================================================
-# UTILITIES
+# LANGUES
 # ============================================================
 
 SUPPORTED_LANGUAGES = {
     "fr": "français",
-    "en": "anglais",
-    "es": "espagnol",
-    "pt": "portugais",
+    "en": "English",
+    "es": "español",
+    "pt": "português",
 }
 
 
-def normalize_language(language: str) -> str:
-    language = (language or "fr").lower().strip()
+# ============================================================
+# CATÉGORIES INTERNES DE TENSION
+#
+# Ces clés servent uniquement au serveur et à PostgreSQL.
+# Elles ne doivent jamais être affichées directement.
+# ============================================================
 
-    if language not in SUPPORTED_LANGUAGES:
+ALLOWED_TENSIONS = {
+    "sexuality",
+    "personality",
+    "religion",
+    "conflict_management",
+    "children",
+    "fidelity",
+    "relationship_model",
+    "marriage",
+    "finances",
+    "family",
+    "lifestyle",
+    "independence",
+    "communication",
+    "values",
+    "future_projects",
+    "other",
+}
+
+
+# ============================================================
+# TRADUCTIONS DES TENSIONS
+# ============================================================
+
+TENSION_LABELS = {
+
+    "fr": {
+        "sexuality":
+            "Sexualité",
+
+        "personality":
+            "Personnalité et comportement",
+
+        "religion":
+            "Religion et convictions",
+
+        "conflict_management":
+            "Gestion des conflits",
+
+        "children":
+            "Projet parental et enfants",
+
+        "fidelity":
+            "Fidélité et confiance",
+
+        "relationship_model":
+            "Vision de la relation",
+
+        "marriage":
+            "Vision du mariage",
+
+        "finances":
+            "Gestion financière",
+
+        "family":
+            "Famille et entourage",
+
+        "lifestyle":
+            "Mode de vie",
+
+        "independence":
+            "Indépendance et espace personnel",
+
+        "communication":
+            "Communication dans le couple",
+
+        "values":
+            "Valeurs et convictions",
+
+        "future_projects":
+            "Projets de vie",
+
+        "other":
+            "Autres différences importantes",
+    },
+
+
+    "en": {
+        "sexuality":
+            "Sexuality",
+
+        "personality":
+            "Personality and behaviour",
+
+        "religion":
+            "Religion and beliefs",
+
+        "conflict_management":
+            "Conflict management",
+
+        "children":
+            "Parenthood and children",
+
+        "fidelity":
+            "Fidelity and trust",
+
+        "relationship_model":
+            "Relationship expectations",
+
+        "marriage":
+            "Views on marriage",
+
+        "finances":
+            "Financial management",
+
+        "family":
+            "Family and social environment",
+
+        "lifestyle":
+            "Lifestyle",
+
+        "independence":
+            "Independence and personal space",
+
+        "communication":
+            "Communication in the relationship",
+
+        "values":
+            "Values and beliefs",
+
+        "future_projects":
+            "Life plans",
+
+        "other":
+            "Other important differences",
+    },
+
+
+    "es": {
+        "sexuality":
+            "Sexualidad",
+
+        "personality":
+            "Personalidad y comportamiento",
+
+        "religion":
+            "Religión y convicciones",
+
+        "conflict_management":
+            "Gestión de conflictos",
+
+        "children":
+            "Proyecto parental e hijos",
+
+        "fidelity":
+            "Fidelidad y confianza",
+
+        "relationship_model":
+            "Visión de la relación",
+
+        "marriage":
+            "Visión del matrimonio",
+
+        "finances":
+            "Gestión financiera",
+
+        "family":
+            "Familia y entorno",
+
+        "lifestyle":
+            "Estilo de vida",
+
+        "independence":
+            "Independencia y espacio personal",
+
+        "communication":
+            "Comunicación en la pareja",
+
+        "values":
+            "Valores y convicciones",
+
+        "future_projects":
+            "Proyectos de vida",
+
+        "other":
+            "Otras diferencias importantes",
+    },
+
+
+    "pt": {
+        "sexuality":
+            "Sexualidade",
+
+        "personality":
+            "Personalidade e comportamento",
+
+        "religion":
+            "Religião e convicções",
+
+        "conflict_management":
+            "Gestão de conflitos",
+
+        "children":
+            "Projeto parental e filhos",
+
+        "fidelity":
+            "Fidelidade e confiança",
+
+        "relationship_model":
+            "Visão do relacionamento",
+
+        "marriage":
+            "Visão do casamento",
+
+        "finances":
+            "Gestão financeira",
+
+        "family":
+            "Família e convívio social",
+
+        "lifestyle":
+            "Estilo de vida",
+
+        "independence":
+            "Independência e espaço pessoal",
+
+        "communication":
+            "Comunicação no relacionamento",
+
+        "values":
+            "Valores e convicções",
+
+        "future_projects":
+            "Projetos de vida",
+
+        "other":
+            "Outras diferenças importantes",
+    },
+}
+
+
+# ============================================================
+# UTILITAIRES
+# ============================================================
+
+def normalize_language(
+    language: str,
+) -> str:
+
+    value = (
+        language or "fr"
+    ).strip().lower()
+
+    if value not in SUPPORTED_LANGUAGES:
         return "fr"
 
-    return language
+    return value
+
+
+def translate_tensions(
+    tensions: List[str],
+    language: str,
+) -> List[str]:
+
+    language = normalize_language(
+        language
+    )
+
+    labels = TENSION_LABELS.get(
+        language,
+        TENSION_LABELS["fr"],
+    )
+
+    translated = []
+
+    for tension in tensions:
+
+        label = labels.get(
+            tension
+        )
+
+        if (
+            label
+            and label not in translated
+        ):
+            translated.append(
+                label
+            )
+
+    return translated
+
+
+def clamp_score(
+    value: Any,
+) -> int:
+
+    try:
+        score = int(
+            round(
+                float(value)
+            )
+        )
+
+    except (
+        ValueError,
+        TypeError,
+    ):
+        return 0
+
+    return max(
+        0,
+        min(
+            100,
+            score,
+        ),
+    )
 
 
 def get_profile_or_404(
@@ -103,17 +440,190 @@ def get_profile_or_404(
 
     profile = (
         db.query(Scan)
-        .filter(Scan.idprofile == profile_id)
+        .filter(
+            Scan.idprofile
+            == profile_id
+        )
         .first()
     )
 
     if profile is None:
+
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Profil introuvable : {profile_id}",
+            status_code=404,
+            detail="Profil introuvable",
         )
 
     return profile
+
+
+def safe_text(
+    value: Any,
+) -> Optional[str]:
+
+    if value is None:
+        return None
+
+    text = str(
+        value
+    ).strip()
+
+    if not text:
+        return None
+
+    return text[:100]
+
+
+def first_value(
+    data: Dict[str, Any],
+    keys: List[str],
+) -> Optional[str]:
+
+    for key in keys:
+
+        if key in data:
+
+            value = safe_text(
+                data.get(key)
+            )
+
+            if value:
+                return value
+
+    return None
+
+
+def extract_general_information(
+    data: Dict[str, Any],
+) -> Dict[str, Optional[str]]:
+
+    return {
+
+        "gender": first_value(
+            data,
+            [
+                "gender",
+                "sex",
+                "my_gender",
+            ],
+        ),
+
+        "orientation": first_value(
+            data,
+            [
+                "orientation",
+                "sexual_orientation",
+                "my_orientation",
+                "relationship_orientation",
+            ],
+        ),
+
+        "country": first_value(
+            data,
+            [
+                "country",
+                "my_country",
+                "country_of_residence",
+                "residence_country",
+            ],
+        ),
+    }
+
+
+# ============================================================
+# CONSTRUCTION DE LA RÉPONSE SELON L'UTILISATEUR
+# ============================================================
+
+def build_viewer_result(
+    result: MatchResult,
+    viewer_profile_id: str,
+    language: str,
+) -> Dict[str, Any]:
+
+    language = normalize_language(
+        language
+    )
+
+    translated_tensions = (
+        translate_tensions(
+            result.tensions or [],
+            language,
+        )
+    )
+
+    # --------------------------------------------------------
+    # PROFIL A
+    # = utilisateur qui a effectué le scan
+    # --------------------------------------------------------
+
+    if (
+        viewer_profile_id
+        == result.profile_a_id
+    ):
+
+        return {
+            "success": True,
+
+            "match_id":
+                result.match_id,
+
+            "language":
+                language,
+
+            "compatibility": {
+
+                "my_profile_to_their_expectations":
+                    result.match_a_to_b,
+
+                "their_profile_to_my_expectations":
+                    result.match_b_to_a,
+            },
+
+            "tensions":
+                translated_tensions,
+        }
+
+    # --------------------------------------------------------
+    # PROFIL B
+    # = propriétaire du QR
+    #
+    # Les scores sont inversés.
+    # --------------------------------------------------------
+
+    if (
+        viewer_profile_id
+        == result.profile_b_id
+    ):
+
+        return {
+            "success": True,
+
+            "match_id":
+                result.match_id,
+
+            "language":
+                language,
+
+            "compatibility": {
+
+                "my_profile_to_their_expectations":
+                    result.match_b_to_a,
+
+                "their_profile_to_my_expectations":
+                    result.match_a_to_b,
+            },
+
+            "tensions":
+                translated_tensions,
+        }
+
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Ce profil ne participe "
+            "pas à ce match"
+        ),
+    )
 
 
 # ============================================================
@@ -122,10 +632,15 @@ def get_profile_or_404(
 
 @app.get("/")
 def root():
+
     return {
         "status": "ok",
-        "service": "deep-matching-api",
-        "version": "3.1.1",
+        "service":
+            "deep-matching-api",
+        "version":
+            "3.3.0",
+        "groq_model":
+            GROQ_MODEL,
     }
 
 
@@ -135,16 +650,20 @@ def root():
 
 @app.get("/health")
 def health():
+
     return {
         "status": "ok",
         "database": "PostgreSQL",
-        "service": "deep-matching-api",
-        "groq_configured": bool(GROQ_API_KEY),
+        "service":
+            "deep-matching-api",
+        "groq_configured":
+            bool(GROQ_API_KEY),
+        "version": "3.3.0",
     }
 
 
 # ============================================================
-# CREATE PROFILE
+# CREATE / SYNC PROFILE
 # ============================================================
 
 @app.post(
@@ -158,47 +677,109 @@ def create_scan(
 
     existing = (
         db.query(Scan)
-        .filter(Scan.idprofile == payload.idprofile)
+        .filter(
+            Scan.idprofile
+            == payload.idprofile
+        )
         .first()
     )
 
+    # --------------------------------------------------------
+    # Profil déjà présent :
+    # mise à jour des données.
+    # --------------------------------------------------------
+
     if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Ce profil existe déjà",
+
+        existing.discussion_data = (
+            payload.discussion_data
         )
 
+        try:
+
+            db.commit()
+            db.refresh(
+                existing
+            )
+
+        except Exception as e:
+
+            db.rollback()
+
+            print(
+                "[DATABASE][SYNC] "
+                f"{type(e).__name__}: {e}",
+                flush=True,
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Impossible de "
+                    "synchroniser le profil"
+                ),
+            )
+
+        return {
+            "success": True,
+            "message":
+                "Profil synchronisé",
+            "id":
+                existing.id,
+            "idprofile":
+                existing.idprofile,
+        }
+
+    # --------------------------------------------------------
+    # Nouveau profil
+    # --------------------------------------------------------
+
     scan = Scan(
-        idprofile=payload.idprofile,
-        discussion_data=payload.discussion_data,
+        idprofile=(
+            payload.idprofile
+        ),
+        discussion_data=(
+            payload.discussion_data
+        ),
     )
 
-    db.add(scan)
+    db.add(
+        scan
+    )
 
     try:
+
         db.commit()
-        db.refresh(scan)
+        db.refresh(
+            scan
+        )
 
     except Exception as e:
 
         db.rollback()
 
         print(
-            f"[DATABASE][CREATE] "
+            "[DATABASE][CREATE] "
             f"{type(e).__name__}: {e}",
             flush=True,
         )
 
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Impossible d'enregistrer le profil",
+            status_code=500,
+            detail=(
+                "Impossible d'enregistrer "
+                "le profil"
+            ),
         )
 
     return {
         "success": True,
-        "message": "Profil enregistré",
-        "id": scan.id,
-        "idprofile": scan.idprofile,
+        "message":
+            "Profil enregistré",
+        "id":
+            scan.id,
+        "idprofile":
+            scan.idprofile,
     }
 
 
@@ -206,7 +787,9 @@ def create_scan(
 # PROFILE EXISTS
 # ============================================================
 
-@app.get("/api/v1/scan/{idprofile}/exists")
+@app.get(
+    "/api/v1/scan/{idprofile}/exists"
+)
 def profile_exists(
     idprofile: str,
     db: Session = Depends(get_db),
@@ -214,21 +797,32 @@ def profile_exists(
 
     profile = (
         db.query(Scan)
-        .filter(Scan.idprofile == idprofile)
+        .filter(
+            Scan.idprofile
+            == idprofile
+        )
         .first()
     )
 
     return {
-        "idprofile": idprofile,
-        "exists": profile is not None,
+        "idprofile":
+            idprofile,
+
+        "exists":
+            profile is not None,
     }
 
 
 # ============================================================
 # GET PROFILE
+#
+# À protéger/supprimer avant production publique :
+# discussion_data contient les réponses privées Cupid.
 # ============================================================
 
-@app.get("/api/v1/scan/{idprofile}")
+@app.get(
+    "/api/v1/scan/{idprofile}"
+)
 def get_scan(
     idprofile: str,
     db: Session = Depends(get_db),
@@ -240,11 +834,20 @@ def get_scan(
     )
 
     return {
-        "id": scan.id,
-        "idprofile": scan.idprofile,
-        "discussion_data": scan.discussion_data,
-        "created_at": scan.created_at,
-        "updated_at": scan.updated_at,
+        "id":
+            scan.id,
+
+        "idprofile":
+            scan.idprofile,
+
+        "discussion_data":
+            scan.discussion_data,
+
+        "created_at":
+            scan.created_at,
+
+        "updated_at":
+            scan.updated_at,
     }
 
 
@@ -252,7 +855,9 @@ def get_scan(
 # UPDATE PROFILE
 # ============================================================
 
-@app.put("/api/v1/scan/{idprofile}")
+@app.put(
+    "/api/v1/scan/{idprofile}"
+)
 def update_scan(
     idprofile: str,
     payload: ScanUpdate,
@@ -264,32 +869,41 @@ def update_scan(
         idprofile,
     )
 
-    scan.discussion_data = payload.discussion_data
+    scan.discussion_data = (
+        payload.discussion_data
+    )
 
     try:
 
         db.commit()
-        db.refresh(scan)
+        db.refresh(
+            scan
+        )
 
     except Exception as e:
 
         db.rollback()
 
         print(
-            f"[DATABASE][UPDATE] "
+            "[DATABASE][UPDATE] "
             f"{type(e).__name__}: {e}",
             flush=True,
         )
 
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Impossible de mettre à jour le profil",
+            status_code=500,
+            detail=(
+                "Impossible de mettre "
+                "à jour le profil"
+            ),
         )
 
     return {
         "success": True,
-        "message": "Profil mis à jour",
-        "idprofile": scan.idprofile,
+        "message":
+            "Profil mis à jour",
+        "idprofile":
+            scan.idprofile,
     }
 
 
@@ -297,7 +911,9 @@ def update_scan(
 # DELETE PROFILE
 # ============================================================
 
-@app.delete("/api/v1/scan/{idprofile}")
+@app.delete(
+    "/api/v1/scan/{idprofile}"
+)
 def delete_scan(
     idprofile: str,
     db: Session = Depends(get_db),
@@ -310,7 +926,10 @@ def delete_scan(
 
     try:
 
-        db.delete(scan)
+        db.delete(
+            scan
+        )
+
         db.commit()
 
     except Exception as e:
@@ -318,20 +937,25 @@ def delete_scan(
         db.rollback()
 
         print(
-            f"[DATABASE][DELETE] "
+            "[DATABASE][DELETE] "
             f"{type(e).__name__}: {e}",
             flush=True,
         )
 
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Impossible de supprimer le profil",
+            status_code=500,
+            detail=(
+                "Impossible de supprimer "
+                "le profil"
+            ),
         )
 
     return {
         "success": True,
-        "message": "Profil supprimé",
-        "idprofile": idprofile,
+        "message":
+            "Profil supprimé",
+        "idprofile":
+            idprofile,
     }
 
 
@@ -339,7 +963,9 @@ def delete_scan(
 # VERIFY MATCH
 # ============================================================
 
-@app.post("/api/v1/match/verify")
+@app.post(
+    "/api/v1/match/verify"
+)
 def verify_match(
     payload: MatchRequest,
     db: Session = Depends(get_db),
@@ -348,7 +974,8 @@ def verify_match(
     my_profile = (
         db.query(Scan)
         .filter(
-            Scan.idprofile == payload.my_profile_id
+            Scan.idprofile
+            == payload.my_profile_id
         )
         .first()
     )
@@ -356,224 +983,410 @@ def verify_match(
     scanned_profile = (
         db.query(Scan)
         .filter(
-            Scan.idprofile == payload.scanned_profile_id
+            Scan.idprofile
+            == payload.scanned_profile_id
         )
         .first()
     )
 
     return {
+
         "ready": (
             my_profile is not None
             and scanned_profile is not None
         ),
-        "my_profile_exists": my_profile is not None,
-        "scanned_profile_exists": scanned_profile is not None,
+
+        "my_profile_exists":
+            my_profile is not None,
+
+        "scanned_profile_exists":
+            scanned_profile is not None,
     }
 
 
 # ============================================================
-# MATCH WITH GROQ
+# PROMPT DEEP MATCHING
 # ============================================================
 
-@app.post("/api/v1/match")
+def build_match_prompt(
+    profile_a: Dict[str, Any],
+    profile_b: Dict[str, Any],
+) -> str:
+
+    return f"""
+Tu es le moteur d'analyse sémantique de Deep Matching.
+
+Tu compares deux questionnaires relationnels.
+
+============================================================
+OBJECTIF
+============================================================
+
+Tu dois mesurer deux compatibilités directionnelles.
+
+A_TO_B :
+
+Dans quelle mesure ce que la personne A déclare être
+correspond-il à ce que la personne B déclare rechercher
+chez un partenaire ?
+
+B_TO_A :
+
+Dans quelle mesure ce que la personne B déclare être
+correspond-il à ce que la personne A déclare rechercher
+chez un partenaire ?
+
+Les deux scores sont indépendants.
+
+Ils peuvent donc être très différents.
+
+============================================================
+SIGNIFICATION DES SCORES
+============================================================
+
+Les scores sont compris entre 0 et 100.
+
+Ils représentent uniquement la correspondance entre :
+
+- les caractéristiques déclarées d'une personne ;
+- les attentes déclarées de l'autre.
+
+Ils ne représentent PAS :
+
+- une probabilité de réussite du couple ;
+- une probabilité de mariage ;
+- une probabilité de séparation ;
+- un diagnostic psychologique ;
+- un risque de violence ;
+- un risque de suicide ;
+- un risque de dépression.
+
+============================================================
+IMPORTANCE DES CRITÈRES
+============================================================
+
+Toutes les réponses ne doivent PAS avoir le même poids.
+
+Une simple préférence doit avoir une influence limitée.
+
+Une attente importante doit avoir une influence plus forte.
+
+Une condition explicitement présentée comme :
+
+- indispensable ;
+- obligatoire ;
+- non négociable ;
+- rédhibitoire ;
+- refus absolu ;
+- impossible à accepter
+
+doit avoir une influence très importante sur la direction
+concernée.
+
+============================================================
+ORIENTATION ET TYPE DE PARTENAIRE
+============================================================
+
+Analyse attentivement :
+
+- le genre déclaré ;
+- l'orientation déclarée ;
+- le genre recherché ;
+- le type de partenaire recherché.
+
+Si les déclarations montrent clairement que la personne A
+ne correspond pas au type de partenaire recherché par B,
+cela doit fortement réduire A_TO_B.
+
+Si B ne correspond pas au type de partenaire recherché
+par A, cela doit fortement réduire B_TO_A.
+
+Ne suppose jamais une orientation ou une préférence qui
+n'a pas été explicitement exprimée.
+
+============================================================
+EXIGENCES EXPLICITES
+============================================================
+
+Lorsqu'une personne exprime clairement une condition
+importante concernant notamment :
+
+- religion ;
+- enfants ;
+- fidélité ;
+- mariage ;
+- sexualité ;
+- modèle relationnel ;
+- valeurs ;
+- mode de vie ;
+- projets futurs ;
+
+et que l'autre profil est manifestement incompatible avec
+cette condition, cette incompatibilité doit avoir une
+influence importante sur le score correspondant.
+
+============================================================
+TENSIONS
+============================================================
+
+Les tensions ne doivent jamais révéler une réponse précise.
+
+Retourne uniquement des catégories générales.
+
+Valeurs autorisées :
+
+sexuality
+personality
+religion
+conflict_management
+children
+fidelity
+relationship_model
+marriage
+finances
+family
+lifestyle
+independence
+communication
+values
+future_projects
+other
+
+============================================================
+SEXUALITY
+============================================================
+
+La catégorie "sexuality" peut représenter des différences
+importantes concernant notamment :
+
+- orientation ;
+- attentes intimes ;
+- compatibilité sexuelle déclarée ;
+- convictions liées à la sexualité.
+
+Ne révèle jamais laquelle de ces réponses précises a été
+donnée.
+
+============================================================
+PERSONALITY
+============================================================
+
+La catégorie "personality" peut représenter des différences
+concernant notamment :
+
+- tempérament ;
+- comportement ;
+- caractère ;
+- calme ;
+- timidité ;
+- autorité ;
+- indépendance ;
+- conception des rôles relationnels ;
+- certaines convictions comportementales.
+
+Ne qualifie jamais une personne de dangereuse ou violente
+sur la seule base du questionnaire.
+
+============================================================
+CONFIDENTIALITÉ
+============================================================
+
+Les réponses Cupid sont privées.
+
+Ne reproduis jamais une réponse exacte.
+
+Ne produis jamais une tension suffisamment détaillée pour
+permettre à l'autre utilisateur de reconstruire une réponse
+privée.
+
+============================================================
+FORMAT
+============================================================
+
+Retourne UNIQUEMENT un JSON valide :
+
+{{
+    "a_to_b": 82,
+    "b_to_a": 71,
+    "tensions": [
+        "religion",
+        "conflict_management"
+    ]
+}}
+
+Aucun Markdown.
+
+Aucun commentaire.
+
+Aucun texte avant le JSON.
+
+Aucun texte après le JSON.
+
+============================================================
+PROFIL A
+============================================================
+
+{json.dumps(
+    profile_a,
+    ensure_ascii=False,
+    indent=2,
+    default=str,
+)}
+
+============================================================
+PROFIL B
+============================================================
+
+{json.dumps(
+    profile_b,
+    ensure_ascii=False,
+    indent=2,
+    default=str,
+)}
+"""
+
+
+# ============================================================
+# ANALYSE MATCH
+# ============================================================
+
+@app.post(
+    "/api/v1/match"
+)
 def analyze_match(
     payload: MatchRequest,
     db: Session = Depends(get_db),
 ):
 
     # --------------------------------------------------------
-    # Vérification Groq
+    # GROQ
     # --------------------------------------------------------
 
-    if not GROQ_API_KEY or groq_client is None:
-
-        print(
-            "[GROQ] GROQ_API_KEY absente.",
-            flush=True,
-        )
+    if (
+        not GROQ_API_KEY
+        or groq_client is None
+    ):
 
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Service d'analyse IA non configuré",
+            status_code=503,
+            detail=(
+                "Service d'analyse IA "
+                "non configuré"
+            ),
         )
 
     # --------------------------------------------------------
-    # Langue
+    # AUTO MATCH
     # --------------------------------------------------------
 
-    language = normalize_language(
-        payload.language
-    )
+    if (
+        payload.my_profile_id
+        == payload.scanned_profile_id
+    ):
 
-    language_name = SUPPORTED_LANGUAGES[
-        language
-    ]
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Un profil ne peut pas "
+                "être comparé à lui-même"
+            ),
+        )
 
     # --------------------------------------------------------
-    # Charger les deux profils
+    # PROFILS
     # --------------------------------------------------------
 
-    my_profile = get_profile_or_404(
+    profile_a = get_profile_or_404(
         db,
         payload.my_profile_id,
     )
 
-    scanned_profile = get_profile_or_404(
+    profile_b = get_profile_or_404(
         db,
         payload.scanned_profile_id,
     )
 
+    data_a = (
+        profile_a.discussion_data
+        or {}
+    )
+
+    data_b = (
+        profile_b.discussion_data
+        or {}
+    )
+
     print(
-        "[MATCH] Analyse demandée : "
-        f"{payload.my_profile_id} <-> "
+        "[MATCH] "
+        f"{payload.my_profile_id}"
+        " <-> "
         f"{payload.scanned_profile_id}",
         flush=True,
     )
 
     # --------------------------------------------------------
-    # Préparation des données
+    # PROMPT
     # --------------------------------------------------------
 
-    profile_a_data = (
-        my_profile.discussion_data or {}
-    )
-
-    profile_b_data = (
-        scanned_profile.discussion_data or {}
+    prompt = build_match_prompt(
+        data_a,
+        data_b,
     )
 
     # --------------------------------------------------------
-    # Prompt système
-    # --------------------------------------------------------
-
-    system_prompt = f"""
-Tu es Cupid, le moteur d'analyse de compatibilité
-relationnelle de l'application Deep Matching.
-
-Tu dois comparer deux profils à partir des réponses
-fournies par les utilisateurs.
-
-Ton rôle n'est pas de décider si deux personnes doivent
-ou non commencer ou poursuivre une relation.
-
-Tu dois identifier de manière neutre :
-
-- leurs principaux points communs ;
-- leurs différences importantes ;
-- les sujets qui méritent une discussion ;
-- les éventuels points d'attention ;
-- une synthèse générale de leur compatibilité.
-
-Ne donne aucun diagnostic médical ou psychologique.
-
-N'invente aucune information qui n'est pas présente
-dans les profils.
-
-Si certaines informations sont insuffisantes,
-indique-le clairement.
-
-Réponds exclusivement en {language_name}.
-
-IMPORTANT :
-
-La réponse doit être exclusivement un objet JSON valide.
-
-N'utilise pas de Markdown.
-N'utilise pas ```json.
-N'ajoute aucun texte avant ou après le JSON.
-
-Structure obligatoire :
-
-{{
-    "summary": "texte",
-    "compatibilities": [
-        "élément 1",
-        "élément 2"
-    ],
-    "differences": [
-        "élément 1",
-        "élément 2"
-    ],
-    "attention_points": [
-        "élément 1",
-        "élément 2"
-    ],
-    "recommendation": "texte"
-}}
-"""
-
-    # --------------------------------------------------------
-    # Message utilisateur
-    # --------------------------------------------------------
-
-    user_prompt = f"""
-Analyse la compatibilité entre les deux profils suivants.
-
-PROFIL DE L'UTILISATEUR :
-
-{json.dumps(
-    profile_a_data,
-    ensure_ascii=False,
-    indent=2,
-    default=str,
-)}
-
-PROFIL SCANNÉ :
-
-{json.dumps(
-    profile_b_data,
-    ensure_ascii=False,
-    indent=2,
-    default=str,
-)}
-
-Compare uniquement les informations disponibles.
-"""
-
-    # --------------------------------------------------------
-    # Appel Groq
+    # APPEL GROQ
     # --------------------------------------------------------
 
     try:
 
         print(
-            "[GROQ] Envoi de la requête...",
+            "[GROQ] "
+            f"Model: {GROQ_MODEL}",
             flush=True,
         )
 
         completion = (
-            groq_client.chat.completions.create(
-                model="openai/gpt-oss-120b",
+            groq_client
+            .chat
+            .completions
+            .create(
+
+                model=GROQ_MODEL,
+
                 messages=[
                     {
-                        "role": "system",
-                        "content": system_prompt,
+                        "role":
+                            "system",
+
+                        "content": (
+                            "Analyse les deux profils "
+                            "relationnels. "
+                            "Retourne uniquement "
+                            "le JSON demandé."
+                        ),
                     },
                     {
-                        "role": "user",
-                        "content": user_prompt,
+                        "role":
+                            "user",
+
+                        "content":
+                            prompt,
                     },
                 ],
-                temperature=0.3,
+
+                temperature=0.1,
+
                 response_format={
-                    "type": "json_object"
+                    "type":
+                        "json_object"
                 },
             )
         )
 
-        print(
-            "[GROQ] Réponse reçue.",
-            flush=True,
-        )
-
-        # ----------------------------------------------------
-        # Récupération du contenu
-        # ----------------------------------------------------
-
         if not completion.choices:
 
             raise ValueError(
-                "Groq n'a retourné aucun choix."
+                "Aucun résultat Groq"
             )
 
         content = (
@@ -586,91 +1399,17 @@ Compare uniquement les informations disponibles.
         if not content:
 
             raise ValueError(
-                "Groq a retourné une réponse vide."
+                "Réponse Groq vide"
             )
 
-        print(
-            "[GROQ] Réponse reçue et non vide.",
-            flush=True,
+        result = json.loads(
+            content
         )
-
-        # ----------------------------------------------------
-        # Conversion JSON
-        # ----------------------------------------------------
-
-        try:
-
-            analysis = json.loads(content)
-
-        except json.JSONDecodeError as json_error:
-
-            print(
-                "[GROQ][JSON] Réponse invalide : "
-                f"{content[:1000]}",
-                flush=True,
-            )
-
-            raise ValueError(
-                "La réponse Groq n'est pas un JSON valide."
-            ) from json_error
-
-        # ----------------------------------------------------
-        # Vérification minimale du résultat
-        # ----------------------------------------------------
-
-        required_fields = [
-            "summary",
-            "compatibilities",
-            "differences",
-            "attention_points",
-            "recommendation",
-        ]
-
-        missing_fields = [
-            field
-            for field in required_fields
-            if field not in analysis
-        ]
-
-        if missing_fields:
-
-            print(
-                "[GROQ][JSON] Champs manquants : "
-                f"{missing_fields}",
-                flush=True,
-            )
-
-            raise ValueError(
-                "Réponse Groq incomplète."
-            )
-
-        # ----------------------------------------------------
-        # Succès
-        # ----------------------------------------------------
-
-        print(
-            "[MATCH] Analyse terminée avec succès.",
-            flush=True,
-        )
-
-        return {
-            "success": True,
-            "my_profile_id":
-                payload.my_profile_id,
-            "scanned_profile_id":
-                payload.scanned_profile_id,
-            "language": language,
-            "analysis": analysis,
-        }
-
-    # --------------------------------------------------------
-    # ERREUR GROQ
-    # --------------------------------------------------------
 
     except Exception as e:
 
         print(
-            "====================================",
+            "================================",
             flush=True,
         )
 
@@ -680,26 +1419,347 @@ Compare uniquement les informations disponibles.
         )
 
         print(
-            f"Type : {type(e).__name__}",
+            f"Type: {type(e).__name__}",
             flush=True,
         )
 
         print(
-            f"Message : {e}",
+            f"Message: {e}",
             flush=True,
         )
 
         traceback.print_exc()
 
         print(
-            "====================================",
+            "================================",
             flush=True,
         )
 
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
+            status_code=502,
             detail=(
                 "Impossible d'effectuer "
                 "l'analyse de compatibilité"
             ),
         )
+
+    # ========================================================
+    # SCORES
+    # ========================================================
+
+    match_a_to_b = clamp_score(
+        result.get(
+            "a_to_b",
+            0,
+        )
+    )
+
+    match_b_to_a = clamp_score(
+        result.get(
+            "b_to_a",
+            0,
+        )
+    )
+
+
+    # ========================================================
+    # TENSIONS INTERNES
+    # ========================================================
+
+    raw_tensions = result.get(
+        "tensions",
+        [],
+    )
+
+    tensions: List[str] = []
+
+    if isinstance(
+        raw_tensions,
+        list,
+    ):
+
+        for item in raw_tensions:
+
+            tension = (
+                str(item)
+                .strip()
+                .lower()
+            )
+
+            if (
+                tension
+                in ALLOWED_TENSIONS
+                and tension
+                not in tensions
+            ):
+
+                tensions.append(
+                    tension
+                )
+
+
+    # ========================================================
+    # MATCH ID
+    # ========================================================
+
+    match_id = (
+        "DM-"
+        + uuid.uuid4()
+        .hex
+        .upper()
+    )
+
+
+    # ========================================================
+    # RESULTAT TEMPORAIRE
+    # ========================================================
+
+    match_result = MatchResult(
+
+        match_id=match_id,
+
+        profile_a_id=(
+            payload.my_profile_id
+        ),
+
+        profile_b_id=(
+            payload.scanned_profile_id
+        ),
+
+        match_a_to_b=(
+            match_a_to_b
+        ),
+
+        match_b_to_a=(
+            match_b_to_a
+        ),
+
+        # Clés techniques conservées en base
+        tensions=tensions,
+
+        summary=None,
+    )
+
+
+    # ========================================================
+    # INFORMATIONS STATISTIQUES
+    # ========================================================
+
+    info_a = (
+        extract_general_information(
+            data_a
+        )
+    )
+
+    info_b = (
+        extract_general_information(
+            data_b
+        )
+    )
+
+
+    # ========================================================
+    # HISTORIQUE
+    # ========================================================
+
+    historique = Historique(
+
+        my_gender=(
+            info_a["gender"]
+        ),
+
+        scanned_gender=(
+            info_b["gender"]
+        ),
+
+        my_orientation=(
+            info_a["orientation"]
+        ),
+
+        scanned_orientation=(
+            info_b["orientation"]
+        ),
+
+        my_country=(
+            info_a["country"]
+        ),
+
+        scanned_country=(
+            info_b["country"]
+        ),
+
+        match_my_to_their=(
+            match_a_to_b
+        ),
+
+        match_their_to_my=(
+            match_b_to_a
+        ),
+
+        # Clés indépendantes de la langue.
+        conflit=tensions,
+    )
+
+
+    # ========================================================
+    # ENREGISTREMENT
+    # ========================================================
+
+    try:
+
+        db.add(
+            match_result
+        )
+
+        db.add(
+            historique
+        )
+
+        db.commit()
+
+        db.refresh(
+            match_result
+        )
+
+    except Exception as e:
+
+        db.rollback()
+
+        print(
+            "[DATABASE][MATCH] "
+            f"{type(e).__name__}: {e}",
+            flush=True,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Analyse réalisée mais "
+                "impossible d'enregistrer "
+                "le résultat"
+            ),
+        )
+
+
+    # ========================================================
+    # RÉPONSE POUR LE SCANNEUR
+    #
+    # Sa propre langue est utilisée.
+    # ========================================================
+
+    return build_viewer_result(
+        match_result,
+        payload.my_profile_id,
+        payload.language,
+    )
+
+
+# ============================================================
+# RECUPERER UN MATCH PRÉCIS
+#
+# Exemple :
+#
+# /api/v1/match/DM-XXX/DMP-XXX?language=en
+#
+# Le serveur détermine automatiquement si le viewer
+# est A ou B et inverse les pourcentages si nécessaire.
+# ============================================================
+
+@app.get(
+    "/api/v1/match/{match_id}/{viewer_profile_id}"
+)
+def get_match_result(
+    match_id: str,
+    viewer_profile_id: str,
+    language: str = Query(
+        default="fr",
+    ),
+    db: Session = Depends(get_db),
+):
+
+    result = (
+        db.query(MatchResult)
+        .filter(
+            MatchResult.match_id
+            == match_id
+        )
+        .first()
+    )
+
+    if result is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Match introuvable",
+        )
+
+    return build_viewer_result(
+        result,
+        viewer_profile_id,
+        language,
+    )
+
+
+# ============================================================
+# DERNIER MATCH POUR UN PROFIL
+#
+# Cet endpoint est important pour le propriétaire du QR.
+#
+# Pendant que son QR est affiché, Flutter peut demander :
+#
+# /api/v1/match/latest/DMP-XXX?language=en
+#
+# Si quelqu'un vient de scanner son QR et qu'un match
+# a été calculé, il récupère le résultat.
+# ============================================================
+
+@app.get(
+    "/api/v1/match/latest/{viewer_profile_id}"
+)
+def get_latest_match(
+    viewer_profile_id: str,
+    language: str = Query(
+        default="fr",
+    ),
+    db: Session = Depends(get_db),
+):
+
+    result = (
+        db.query(MatchResult)
+        .filter(
+            (
+                MatchResult.profile_a_id
+                == viewer_profile_id
+            )
+            |
+            (
+                MatchResult.profile_b_id
+                == viewer_profile_id
+            )
+        )
+        .order_by(
+            MatchResult.created_at.desc()
+        )
+        .first()
+    )
+
+    if result is None:
+
+        return {
+            "success": True,
+            "found": False,
+        }
+
+    viewer_result = (
+        build_viewer_result(
+            result,
+            viewer_profile_id,
+            language,
+        )
+    )
+
+    viewer_result[
+        "found"
+    ] = True
+
+    return viewer_result
