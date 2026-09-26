@@ -1,12 +1,13 @@
 import json
 import os
+import traceback
+from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
-from typing import Dict, Any
 from groq import Groq
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
 from models import Scan
@@ -20,13 +21,13 @@ Base.metadata.create_all(bind=engine)
 
 
 # ============================================================
-# APPLICATION FASTAPI
+# FASTAPI
 # ============================================================
 
 app = FastAPI(
     title="Deep Matching API",
-    description="API Backend de l'application Deep Matching - Cupid V3",
-    version="3.1.0",
+    description="API serveur de l'application Deep Matching",
+    version="3.1.1",
 )
 
 
@@ -49,20 +50,18 @@ app.add_middleware(
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-groq_client = None
+groq_client: Optional[Groq] = None
 
 if GROQ_API_KEY:
-    groq_client = Groq(
-        api_key=GROQ_API_KEY,
-    )
+    groq_client = Groq(api_key=GROQ_API_KEY)
 
 
 # ============================================================
-# MODELES PYDANTIC
+# PYDANTIC MODELS
 # ============================================================
 
 class ScanCreate(BaseModel):
-    idprofile: str
+    idprofile: str = Field(..., min_length=1, max_length=100)
     discussion_data: Dict[str, Any]
 
 
@@ -71,23 +70,62 @@ class ScanUpdate(BaseModel):
 
 
 class MatchRequest(BaseModel):
-    my_profile_id: str
-    scanned_profile_id: str
+    my_profile_id: str = Field(..., min_length=1, max_length=100)
+    scanned_profile_id: str = Field(..., min_length=1, max_length=100)
     language: str = "fr"
 
 
 # ============================================================
-# HOME
+# UTILITIES
+# ============================================================
+
+SUPPORTED_LANGUAGES = {
+    "fr": "français",
+    "en": "anglais",
+    "es": "espagnol",
+    "pt": "portugais",
+}
+
+
+def normalize_language(language: str) -> str:
+    language = (language or "fr").lower().strip()
+
+    if language not in SUPPORTED_LANGUAGES:
+        return "fr"
+
+    return language
+
+
+def get_profile_or_404(
+    db: Session,
+    profile_id: str,
+) -> Scan:
+
+    profile = (
+        db.query(Scan)
+        .filter(Scan.idprofile == profile_id)
+        .first()
+    )
+
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profil introuvable : {profile_id}",
+        )
+
+    return profile
+
+
+# ============================================================
+# ROOT
 # ============================================================
 
 @app.get("/")
-def home():
+def root():
     return {
-        "application": "Deep Matching",
-        "service": "Cupid V3 API",
-        "version": "3.1.0",
-        "status": "online",
-        "ai": "Groq",
+        "status": "ok",
+        "service": "deep-matching-api",
+        "version": "3.1.1",
     }
 
 
@@ -106,7 +144,7 @@ def health():
 
 
 # ============================================================
-# CREATE SCAN
+# CREATE PROFILE
 # ============================================================
 
 @app.post(
@@ -114,39 +152,47 @@ def health():
     status_code=status.HTTP_201_CREATED,
 )
 def create_scan(
-    data: ScanCreate,
+    payload: ScanCreate,
     db: Session = Depends(get_db),
 ):
-    profile_id = data.idprofile.strip()
 
-    if not profile_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Identifiant du profil invalide",
-        )
-
-    existing_scan = (
+    existing = (
         db.query(Scan)
-        .filter(
-            Scan.idprofile == profile_id
-        )
+        .filter(Scan.idprofile == payload.idprofile)
         .first()
     )
 
-    if existing_scan:
+    if existing:
         raise HTTPException(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             detail="Ce profil existe déjà",
         )
 
     scan = Scan(
-        idprofile=profile_id,
-        discussion_data=data.discussion_data,
+        idprofile=payload.idprofile,
+        discussion_data=payload.discussion_data,
     )
 
     db.add(scan)
-    db.commit()
-    db.refresh(scan)
+
+    try:
+        db.commit()
+        db.refresh(scan)
+
+    except Exception as e:
+
+        db.rollback()
+
+        print(
+            f"[DATABASE][CREATE] "
+            f"{type(e).__name__}: {e}",
+            flush=True,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Impossible d'enregistrer le profil",
+        )
 
     return {
         "success": True,
@@ -157,7 +203,29 @@ def create_scan(
 
 
 # ============================================================
-# GET SCAN
+# PROFILE EXISTS
+# ============================================================
+
+@app.get("/api/v1/scan/{idprofile}/exists")
+def profile_exists(
+    idprofile: str,
+    db: Session = Depends(get_db),
+):
+
+    profile = (
+        db.query(Scan)
+        .filter(Scan.idprofile == idprofile)
+        .first()
+    )
+
+    return {
+        "idprofile": idprofile,
+        "exists": profile is not None,
+    }
+
+
+# ============================================================
+# GET PROFILE
 # ============================================================
 
 @app.get("/api/v1/scan/{idprofile}")
@@ -165,22 +233,13 @@ def get_scan(
     idprofile: str,
     db: Session = Depends(get_db),
 ):
-    scan = (
-        db.query(Scan)
-        .filter(
-            Scan.idprofile == idprofile
-        )
-        .first()
+
+    scan = get_profile_or_404(
+        db,
+        idprofile,
     )
 
-    if scan is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Profil introuvable",
-        )
-
     return {
-        "success": True,
         "id": scan.id,
         "idprofile": scan.idprofile,
         "discussion_data": scan.discussion_data,
@@ -190,77 +249,52 @@ def get_scan(
 
 
 # ============================================================
-# EXISTENCE D'UN PROFIL
-#
-# Cette route est préférable pour scan.dart.
-# Elle ne renvoie PAS les réponses privées du profil.
-# ============================================================
-
-@app.get("/api/v1/scan/{idprofile}/exists")
-def profile_exists(
-    idprofile: str,
-    db: Session = Depends(get_db),
-):
-    scan = (
-        db.query(Scan.id)
-        .filter(
-            Scan.idprofile == idprofile
-        )
-        .first()
-    )
-
-    return {
-        "success": True,
-        "idprofile": idprofile,
-        "exists": scan is not None,
-    }
-
-
-# ============================================================
-# UPDATE SCAN
+# UPDATE PROFILE
 # ============================================================
 
 @app.put("/api/v1/scan/{idprofile}")
 def update_scan(
     idprofile: str,
-    data: ScanUpdate,
+    payload: ScanUpdate,
     db: Session = Depends(get_db),
 ):
-    scan = (
-        db.query(Scan)
-        .filter(
-            Scan.idprofile == idprofile
-        )
-        .first()
+
+    scan = get_profile_or_404(
+        db,
+        idprofile,
     )
 
-    if scan is None:
+    scan.discussion_data = payload.discussion_data
+
+    try:
+
+        db.commit()
+        db.refresh(scan)
+
+    except Exception as e:
+
+        db.rollback()
+
+        print(
+            f"[DATABASE][UPDATE] "
+            f"{type(e).__name__}: {e}",
+            flush=True,
+        )
+
         raise HTTPException(
-            status_code=404,
-            detail="Profil introuvable",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Impossible de mettre à jour le profil",
         )
-
-    scan.discussion_data = (
-        data.discussion_data
-    )
-
-    db.commit()
-    db.refresh(scan)
 
     return {
         "success": True,
         "message": "Profil mis à jour",
-        "id": scan.id,
         "idprofile": scan.idprofile,
-        "discussion_data":
-            scan.discussion_data,
-        "updated_at":
-            scan.updated_at,
     }
 
 
 # ============================================================
-# DELETE SCAN
+# DELETE PROFILE
 # ============================================================
 
 @app.delete("/api/v1/scan/{idprofile}")
@@ -268,22 +302,31 @@ def delete_scan(
     idprofile: str,
     db: Session = Depends(get_db),
 ):
-    scan = (
-        db.query(Scan)
-        .filter(
-            Scan.idprofile == idprofile
-        )
-        .first()
+
+    scan = get_profile_or_404(
+        db,
+        idprofile,
     )
 
-    if scan is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Profil introuvable",
+    try:
+
+        db.delete(scan)
+        db.commit()
+
+    except Exception as e:
+
+        db.rollback()
+
+        print(
+            f"[DATABASE][DELETE] "
+            f"{type(e).__name__}: {e}",
+            flush=True,
         )
 
-    db.delete(scan)
-    db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Impossible de supprimer le profil",
+        )
 
     return {
         "success": True,
@@ -293,405 +336,246 @@ def delete_scan(
 
 
 # ============================================================
-# VERIFICATION DE DEUX PROFILS
-#
-# Permet à Flutter de vérifier les deux profils
-# sans télécharger discussion_data.
+# VERIFY MATCH
 # ============================================================
 
 @app.post("/api/v1/match/verify")
 def verify_match(
-    data: MatchRequest,
+    payload: MatchRequest,
     db: Session = Depends(get_db),
 ):
-    my_profile_id = (
-        data.my_profile_id.strip()
-    )
-
-    scanned_profile_id = (
-        data.scanned_profile_id.strip()
-    )
-
-    if (
-        not my_profile_id
-        or not scanned_profile_id
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Identifiant de profil invalide",
-        )
-
-    if (
-        my_profile_id
-        == scanned_profile_id
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Les deux profils doivent "
-                "être différents"
-            ),
-        )
-
-    my_exists = (
-        db.query(Scan.id)
-        .filter(
-            Scan.idprofile
-            == my_profile_id
-        )
-        .first()
-        is not None
-    )
-
-    scanned_exists = (
-        db.query(Scan.id)
-        .filter(
-            Scan.idprofile
-            == scanned_profile_id
-        )
-        .first()
-        is not None
-    )
-
-    return {
-        "success":
-            my_exists
-            and scanned_exists,
-
-        "ready":
-            my_exists
-            and scanned_exists,
-
-        "my_profile_exists":
-            my_exists,
-
-        "scanned_profile_exists":
-            scanned_exists,
-    }
-
-
-# ============================================================
-# ANALYSE DE COMPATIBILITE AVEC GROQ
-# ============================================================
-
-@app.post("/api/v1/match")
-def analyze_match(
-    data: MatchRequest,
-    db: Session = Depends(get_db),
-):
-    # ========================================================
-    # VERIFIER GROQ
-    # ========================================================
-
-    if groq_client is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Le service d'intelligence "
-                "artificielle n'est pas configuré"
-            ),
-        )
-
-    # ========================================================
-    # NETTOYER LES IDENTIFIANTS
-    # ========================================================
-
-    my_profile_id = (
-        data.my_profile_id.strip()
-    )
-
-    scanned_profile_id = (
-        data.scanned_profile_id.strip()
-    )
-
-    # ========================================================
-    # VERIFICATIONS
-    # ========================================================
-
-    if (
-        not my_profile_id
-        or not scanned_profile_id
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Identifiant de profil invalide",
-        )
-
-    if (
-        my_profile_id
-        == scanned_profile_id
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Impossible de comparer "
-                "le même profil"
-            ),
-        )
-
-    # ========================================================
-    # RECUPERER LE PROFIL DU TELEPHONE QUI SCANNE
-    # ========================================================
 
     my_profile = (
         db.query(Scan)
         .filter(
-            Scan.idprofile
-            == my_profile_id
+            Scan.idprofile == payload.my_profile_id
         )
         .first()
     )
-
-    if my_profile is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Le profil de l'utilisateur "
-                "est introuvable"
-            ),
-        )
-
-    # ========================================================
-    # RECUPERER LE PROFIL DU QR CODE
-    # ========================================================
 
     scanned_profile = (
         db.query(Scan)
         .filter(
-            Scan.idprofile
-            == scanned_profile_id
+            Scan.idprofile == payload.scanned_profile_id
         )
         .first()
     )
 
-    if scanned_profile is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Le profil scanné "
-                "est introuvable"
-            ),
-        )
-
-    # ========================================================
-    # LANGUE
-    # ========================================================
-
-    languages = {
-        "fr": "français",
-        "en": "English",
-        "es": "español",
-        "pt": "português",
+    return {
+        "ready": (
+            my_profile is not None
+            and scanned_profile is not None
+        ),
+        "my_profile_exists": my_profile is not None,
+        "scanned_profile_exists": scanned_profile is not None,
     }
 
-    requested_language = (
-        data.language
-        .strip()
-        .lower()
+
+# ============================================================
+# MATCH WITH GROQ
+# ============================================================
+
+@app.post("/api/v1/match")
+def analyze_match(
+    payload: MatchRequest,
+    db: Session = Depends(get_db),
+):
+
+    # --------------------------------------------------------
+    # Vérification Groq
+    # --------------------------------------------------------
+
+    if not GROQ_API_KEY or groq_client is None:
+
+        print(
+            "[GROQ] GROQ_API_KEY absente.",
+            flush=True,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service d'analyse IA non configuré",
+        )
+
+    # --------------------------------------------------------
+    # Langue
+    # --------------------------------------------------------
+
+    language = normalize_language(
+        payload.language
     )
 
-    if (
-        requested_language
-        not in languages
-    ):
-        requested_language = "fr"
-
-    language_name = languages[
-        requested_language
+    language_name = SUPPORTED_LANGUAGES[
+        language
     ]
 
-    # ========================================================
-    # DONNEES ENVOYEES A GROQ
-    #
-    # Les identifiants DMP ne sont pas nécessaires à l'IA.
-    # Nous envoyons uniquement les réponses.
-    # ========================================================
+    # --------------------------------------------------------
+    # Charger les deux profils
+    # --------------------------------------------------------
 
-    profiles_payload = {
-        "profile_a":
-            my_profile.discussion_data,
-
-        "profile_b":
-            scanned_profile.discussion_data,
-    }
-
-    # ========================================================
-    # INSTRUCTIONS POUR GROQ
-    # ========================================================
-
-    system_prompt = f"""
-You are the compatibility analysis engine for the
-Deep Matching application.
-
-You receive two relationship profiles generated from
-the Cupid questionnaire.
-
-Compare the two profiles carefully.
-
-IMPORTANT RULES:
-
-1. Base the analysis ONLY on the information contained
-   in the two profiles.
-
-2. Never invent missing information.
-
-3. Do not make medical or psychological diagnoses.
-
-4. Do not judge either person morally.
-
-5. A difference does not automatically mean
-   incompatibility.
-
-6. Identify agreements, differences and important
-   subjects that the two people should discuss.
-
-7. Give particular attention to:
-   - relationship model
-   - fidelity
-   - marriage
-   - children
-   - religion
-   - family
-   - money and financial expectations
-   - professional projects
-   - country of residence and expatriation
-   - household responsibilities
-   - gender roles
-   - communication
-   - conflict management
-   - lifestyle
-   - alcohol and tobacco
-   - education
-   - social background
-   - intimacy
-   - consent
-   - independence
-   - red flags
-   - long-term expectations
-
-8. Treat sensitive personal information respectfully.
-
-9. Do not claim that the relationship will succeed
-   or fail.
-
-10. Explain uncertainty when the available answers
-    are insufficient.
-
-11. Write ALL human-readable text in:
-    {language_name}
-
-Return ONLY a valid JSON object.
-
-The JSON must use exactly this structure:
-
-{{
-  "summary": "General compatibility summary",
-
-  "compatibilities": [
-    "Compatible point 1",
-    "Compatible point 2"
-  ],
-
-  "differences": [
-    "Important difference 1",
-    "Important difference 2"
-  ],
-
-  "attention_points": [
-    "Topic that should be discussed 1",
-    "Topic that should be discussed 2"
-  ],
-
-  "recommendation":
-    "Neutral and nuanced conclusion"
-}}
-
-Do not add Markdown.
-Do not add text before the JSON.
-Do not add text after the JSON.
-"""
-
-    # ========================================================
-    # MESSAGE UTILISATEUR
-    # ========================================================
-
-    user_prompt = (
-        "Compare the following two Deep Matching "
-        "profiles.\n\n"
-        + json.dumps(
-            profiles_payload,
-            ensure_ascii=False,
-        )
+    my_profile = get_profile_or_404(
+        db,
+        payload.my_profile_id,
     )
 
-    # ========================================================
-    # APPEL GROQ
-    # ========================================================
+    scanned_profile = get_profile_or_404(
+        db,
+        payload.scanned_profile_id,
+    )
+
+    print(
+        "[MATCH] Analyse demandée : "
+        f"{payload.my_profile_id} <-> "
+        f"{payload.scanned_profile_id}",
+        flush=True,
+    )
+
+    # --------------------------------------------------------
+    # Préparation des données
+    # --------------------------------------------------------
+
+    profile_a_data = (
+        my_profile.discussion_data or {}
+    )
+
+    profile_b_data = (
+        scanned_profile.discussion_data or {}
+    )
+
+    # --------------------------------------------------------
+    # Prompt système
+    # --------------------------------------------------------
+
+    system_prompt = f"""
+Tu es Cupid, le moteur d'analyse de compatibilité
+relationnelle de l'application Deep Matching.
+
+Tu dois comparer deux profils à partir des réponses
+fournies par les utilisateurs.
+
+Ton rôle n'est pas de décider si deux personnes doivent
+ou non commencer ou poursuivre une relation.
+
+Tu dois identifier de manière neutre :
+
+- leurs principaux points communs ;
+- leurs différences importantes ;
+- les sujets qui méritent une discussion ;
+- les éventuels points d'attention ;
+- une synthèse générale de leur compatibilité.
+
+Ne donne aucun diagnostic médical ou psychologique.
+
+N'invente aucune information qui n'est pas présente
+dans les profils.
+
+Si certaines informations sont insuffisantes,
+indique-le clairement.
+
+Réponds exclusivement en {language_name}.
+
+IMPORTANT :
+
+La réponse doit être exclusivement un objet JSON valide.
+
+N'utilise pas de Markdown.
+N'utilise pas ```json.
+N'ajoute aucun texte avant ou après le JSON.
+
+Structure obligatoire :
+
+{{
+    "summary": "texte",
+    "compatibilities": [
+        "élément 1",
+        "élément 2"
+    ],
+    "differences": [
+        "élément 1",
+        "élément 2"
+    ],
+    "attention_points": [
+        "élément 1",
+        "élément 2"
+    ],
+    "recommendation": "texte"
+}}
+"""
+
+    # --------------------------------------------------------
+    # Message utilisateur
+    # --------------------------------------------------------
+
+    user_prompt = f"""
+Analyse la compatibilité entre les deux profils suivants.
+
+PROFIL DE L'UTILISATEUR :
+
+{json.dumps(
+    profile_a_data,
+    ensure_ascii=False,
+    indent=2,
+    default=str,
+)}
+
+PROFIL SCANNÉ :
+
+{json.dumps(
+    profile_b_data,
+    ensure_ascii=False,
+    indent=2,
+    default=str,
+)}
+
+Compare uniquement les informations disponibles.
+"""
+
+    # --------------------------------------------------------
+    # Appel Groq
+    # --------------------------------------------------------
 
     try:
-        completion = (
-            groq_client
-            .chat
-            .completions
-            .create(
-                model=(
-                    "llama-3.3-70b-versatile"
-                ),
 
+        print(
+            "[GROQ] Envoi de la requête...",
+            flush=True,
+        )
+
+        completion = (
+            groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
                 messages=[
                     {
                         "role": "system",
-                        "content":
-                            system_prompt,
+                        "content": system_prompt,
                     },
                     {
                         "role": "user",
-                        "content":
-                            user_prompt,
+                        "content": user_prompt,
                     },
                 ],
-
-                # JSON Object Mode
+                temperature=0.3,
                 response_format={
-                    "type":
-                        "json_object"
+                    "type": "json_object"
                 },
-
-                temperature=0.2,
-
-                max_completion_tokens=2500,
-
-                stream=False,
             )
         )
 
-    except Exception as exc:
         print(
-            "=========================================="
+            "[GROQ] Réponse reçue.",
+            flush=True,
         )
 
-        print(
-            "ERREUR GROQ :",
-            repr(exc),
-        )
+        # ----------------------------------------------------
+        # Récupération du contenu
+        # ----------------------------------------------------
 
-        print(
-            "=========================================="
-        )
+        if not completion.choices:
 
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "Impossible d'effectuer "
-                "l'analyse de compatibilité"
-            ),
-        )
+            raise ValueError(
+                "Groq n'a retourné aucun choix."
+            )
 
-    # ========================================================
-    # RECUPERER LA REPONSE
-    # ========================================================
-
-    try:
         content = (
             completion
             .choices[0]
@@ -700,134 +584,122 @@ Do not add text after the JSON.
         )
 
         if not content:
+
             raise ValueError(
-                "Réponse Groq vide"
+                "Groq a retourné une réponse vide."
             )
 
-        result = json.loads(
-            content
+        print(
+            "[GROQ] Réponse reçue et non vide.",
+            flush=True,
         )
 
-    except (
-        json.JSONDecodeError,
-        ValueError,
-        IndexError,
-        AttributeError,
-    ) as exc:
+        # ----------------------------------------------------
+        # Conversion JSON
+        # ----------------------------------------------------
+
+        try:
+
+            analysis = json.loads(content)
+
+        except json.JSONDecodeError as json_error:
+
+            print(
+                "[GROQ][JSON] Réponse invalide : "
+                f"{content[:1000]}",
+                flush=True,
+            )
+
+            raise ValueError(
+                "La réponse Groq n'est pas un JSON valide."
+            ) from json_error
+
+        # ----------------------------------------------------
+        # Vérification minimale du résultat
+        # ----------------------------------------------------
+
+        required_fields = [
+            "summary",
+            "compatibilities",
+            "differences",
+            "attention_points",
+            "recommendation",
+        ]
+
+        missing_fields = [
+            field
+            for field in required_fields
+            if field not in analysis
+        ]
+
+        if missing_fields:
+
+            print(
+                "[GROQ][JSON] Champs manquants : "
+                f"{missing_fields}",
+                flush=True,
+            )
+
+            raise ValueError(
+                "Réponse Groq incomplète."
+            )
+
+        # ----------------------------------------------------
+        # Succès
+        # ----------------------------------------------------
+
         print(
-            "=========================================="
+            "[MATCH] Analyse terminée avec succès.",
+            flush=True,
+        )
+
+        return {
+            "success": True,
+            "my_profile_id":
+                payload.my_profile_id,
+            "scanned_profile_id":
+                payload.scanned_profile_id,
+            "language": language,
+            "analysis": analysis,
+        }
+
+    # --------------------------------------------------------
+    # ERREUR GROQ
+    # --------------------------------------------------------
+
+    except Exception as e:
+
+        print(
+            "====================================",
+            flush=True,
         )
 
         print(
-            "REPONSE GROQ INVALIDE :",
-            repr(exc),
+            "[GROQ ERROR]",
+            flush=True,
         )
 
         print(
-            "=========================================="
+            f"Type : {type(e).__name__}",
+            flush=True,
+        )
+
+        print(
+            f"Message : {e}",
+            flush=True,
+        )
+
+        traceback.print_exc()
+
+        print(
+            "====================================",
+            flush=True,
         )
 
         raise HTTPException(
-            status_code=502,
+            status_code=status.HTTP_502_BAD_GATEWAY,
             detail=(
-                "La réponse de l'IA "
-                "est invalide"
+                "Impossible d'effectuer "
+                "l'analyse de compatibilité"
             ),
         )
-
-    # ========================================================
-    # VERIFIER LA STRUCTURE DU RESULTAT
-    # ========================================================
-
-    required_fields = [
-        "summary",
-        "compatibilities",
-        "differences",
-        "attention_points",
-        "recommendation",
-    ]
-
-    for field in required_fields:
-        if field not in result:
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    "Réponse IA incomplète : "
-                    f"{field}"
-                ),
-            )
-
-    # ========================================================
-    # VERIFIER LES LISTES
-    # ========================================================
-
-    if not isinstance(
-        result["compatibilities"],
-        list,
-    ):
-        result["compatibilities"] = []
-
-    if not isinstance(
-        result["differences"],
-        list,
-    ):
-        result["differences"] = []
-
-    if not isinstance(
-        result["attention_points"],
-        list,
-    ):
-        result["attention_points"] = []
-
-    # ========================================================
-    # LOG SERVEUR
-    #
-    # Ne pas afficher discussion_data dans les logs.
-    # ========================================================
-
-    print(
-        "=========================================="
-    )
-
-    print(
-        "DEEP MATCHING : ANALYSE TERMINEE"
-    )
-
-    print(
-        "PROFIL A :",
-        my_profile_id,
-    )
-
-    print(
-        "PROFIL B :",
-        scanned_profile_id,
-    )
-
-    print(
-        "LANGUE :",
-        requested_language,
-    )
-
-    print(
-        "=========================================="
-    )
-
-    # ========================================================
-    # REPONSE A FLUTTER
-    # ========================================================
-
-    return {
-        "success": True,
-
-        "my_profile_id":
-            my_profile_id,
-
-        "scanned_profile_id":
-            scanned_profile_id,
-
-        "language":
-            requested_language,
-
-        "result":
-            result,
-    }
