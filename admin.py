@@ -102,6 +102,7 @@ class HistoriqueAdmin(ModelView, model=Historique):
         Historique.scanned_country,
         Historique.match_my_to_their,
         Historique.match_their_to_my,
+        Historique.conflit,
         Historique.datescan,
     ]
     column_readonly = [
