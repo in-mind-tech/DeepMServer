@@ -46,22 +46,7 @@ app = FastAPI(
 # ============================================================
 Base.metadata.create_all(bind=engine)
 
-# --- AJOUT TEMPORAIRE POUR MIGRATION ---
-# Supprime les tables pour les recréer avec le bon schéma.
-# À RETIRER après le premier déploiement réussi.
-try:
-    from sqlalchemy import text
-    with engine.connect() as connection:
-        connection.execute(text("DROP TABLE IF EXISTS match_result CASCADE"))
-        connection.execute(text("DROP TABLE IF EXISTS historique CASCADE"))
-        connection.commit()
-    print("[DB MIGRATION] Tables match_result et historique supprimées.", flush=True)
-    # Recréer les tables avec le nouveau schéma
-    Base.metadata.create_all(bind=engine)
-    print("[DB MIGRATION] Tables recréées avec le nouveau schéma.", flush=True)
-except Exception as e:
-    print(f"[DB MIGRATION] Erreur (peut être ignorée si les tables n'existaient pas) : {e}", flush=True)
-# --- FIN AJOUT TEMPORAIRE ---
+
 
 # ============================================================
 # FASTAPI
