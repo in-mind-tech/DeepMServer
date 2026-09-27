@@ -24,7 +24,27 @@ from models import Scan, MatchResult, Historique
 # ============================================================
 # DATABASE
 # ============================================================
+# ============================================================
+# DATABASE
+# ============================================================
 Base.metadata.create_all(bind=engine)
+
+# --- AJOUT TEMPORAIRE POUR MIGRATION ---
+# Supprime les tables pour les recréer avec le bon schéma.
+# À RETIRER après le premier déploiement réussi.
+try:
+    from sqlalchemy import text
+    with engine.connect() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS match_result CASCADE"))
+        connection.execute(text("DROP TABLE IF EXISTS historique CASCADE"))
+        connection.commit()
+    print("[DB MIGRATION] Tables match_result et historique supprimées.", flush=True)
+    # Recréer les tables avec le nouveau schéma
+    Base.metadata.create_all(bind=engine)
+    print("[DB MIGRATION] Tables recréées avec le nouveau schéma.", flush=True)
+except Exception as e:
+    print(f"[DB MIGRATION] Erreur (peut être ignorée si les tables n'existaient pas) : {e}", flush=True)
+# --- FIN AJOUT TEMPORAIRE ---
 
 # ============================================================
 # FASTAPI
@@ -1344,20 +1364,24 @@ def analyze_match(
     # ENREGISTREMENT
     # ========================================================
     try:
-        db.add(
-            match_result
-        )
-        db.add(
-            historique
-        )
+        # ----------------------------------------------------
+        # 1. Enregistrement du résultat temporaire (CRITIQUE)
+        #
+        # C'est ce résultat qui est indispensable pour que
+        # les deux téléphones puissent récupérer leur analyse.
+        # ----------------------------------------------------
+        db.add(match_result)
         db.commit()
-        db.refresh(
-            match_result
+        db.refresh(match_result)
+        print(
+            f"[DATABASE][MATCH] MatchResult enregistré : {match_id}",
+            flush=True,
         )
+
     except Exception as e:
         db.rollback()
         print(
-            "[DATABASE][MATCH] "
+            "[DATABASE][MATCH] ERREUR CRITIQUE sur MatchResult : "
             f"{type(e).__name__}: {e}",
             flush=True,
         )
@@ -1367,9 +1391,36 @@ def analyze_match(
             detail=(
                 "Analyse réalisée mais "
                 "impossible d'enregistrer "
-                "le résultat"
+                "le résultat du match"
             ),
         )
+
+    try:
+        # ----------------------------------------------------
+        # 2. Enregistrement de l'historique (NON CRITIQUE)
+        #
+        # Cette table est réservée à l'administrateur.
+        # Si son écriture échoue, cela ne doit PAS empêcher
+        # l'utilisateur de recevoir son résultat.
+        # ----------------------------------------------------
+        db.add(historique)
+        db.commit()
+        print(
+            f"[DATABASE][HISTORIQUE] Ligne enregistrée pour {match_id}",
+            flush=True,
+        )
+
+    except Exception as e:
+        # On annule uniquement l'insertion dans historique,
+        # pas celle de match_result.
+        db.rollback()
+        print(
+            "[DATABASE][HISTORIQUE] ERREUR (non bloquante) : "
+            f"{type(e).__name__}: {e}",
+            flush=True,
+        )
+        traceback.print_exc()
+        # On ne relance PAS d'exception ici.
 
     print(
         "[MATCH SAVED]",
@@ -1391,7 +1442,6 @@ def analyze_match(
         f"Tensions : {tensions}",
         flush=True,
     )
-
     # ========================================================
     # RÉSULTAT POUR LE SCANNER
     # ========================================================
