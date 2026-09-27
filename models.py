@@ -4,18 +4,32 @@ from sqlalchemy import (
     String,
     Integer,
     DateTime,
+    Boolean,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from database import Base
 
-
 # ============================================================
 # TABLE SCAN
-# Données temporaires envoyées par les téléphones
 # ============================================================
-
+#
+# Cette table contient temporairement les données de profil
+# nécessaires au fonctionnement du Deep Matching.
+#
+# IMPORTANT :
+#
+# - Elle peut être alimentée lorsqu'un utilisateur affiche
+# son QR Code.
+#
+# - Elle peut être mise à jour lorsque son profil change.
+#
+# - Elle sert au serveur pour effectuer une analyse.
+#
+# - Elle ne doit PAS être utilisée comme historique.
+#
+# ============================================================
 class Scan(Base):
     __tablename__ = "scan"
 
@@ -50,21 +64,26 @@ class Scan(Base):
         nullable=False,
     )
 
-
 # ============================================================
 # TABLE MATCH_RESULT
-#
-# Résultat temporaire d'un match.
-#
-# Elle permet :
-# - au scanner de récupérer le résultat
-# - au propriétaire du QR de récupérer le même résultat
-# - d'inverser les deux pourcentages côté application
-#
-# IMPORTANT :
-# aucune conversation Cupid complète n'est enregistrée ici.
 # ============================================================
-
+#
+# Cette table contient UNIQUEMENT le résultat temporaire
+# d'un match entre deux utilisateurs.
+#
+# Elle n'est PAS une table historique.
+#
+# Elle sert uniquement à permettre :
+#
+# 1. au scanner de recevoir son résultat ;
+# 2. au propriétaire du QR de recevoir son résultat ;
+# 3. de conserver le même match pour les deux utilisateurs ;
+# 4. d'inverser les scores selon l'utilisateur qui consulte.
+#
+# Une fois que les DEUX utilisateurs ont reçu leur résultat,
+# le résultat peut être supprimé.
+#
+# ============================================================
 class MatchResult(Base):
     __tablename__ = "match_result"
 
@@ -93,56 +112,98 @@ class MatchResult(Base):
         index=True,
     )
 
-    # A correspond aux attentes de B
     match_a_to_b = Column(
         Integer,
         nullable=False,
     )
 
-    # B correspond aux attentes de A
     match_b_to_a = Column(
         Integer,
         nullable=False,
     )
 
-    # Ex:
-    # [
-    #   "religion",
-    #   "sexuality",
-    #   "conflict_management"
-    # ]
     tensions = Column(
         JSONB,
         nullable=False,
         default=list,
     )
 
-    # Résumé général non sensible
     summary = Column(
         String(2000),
         nullable=True,
+    )
+
+    # ========================================================
+    # ÉTAT DE RÉCEPTION
+    # ========================================================
+    #
+    # Ces deux champs permettent au serveur de savoir si les
+    # deux appareils ont déjà reçu leur résultat.
+    #
+    # False = résultat pas encore récupéré par cet utilisateur.
+    # True = résultat déjà récupéré.
+    #
+    # Lorsque les deux deviennent True, main.py pourra supprimer
+    # la ligne MatchResult.
+    #
+    # ========================================================
+    scanner_received = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+
+    owner_received = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
     )
 
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
+        index=True,
     )
 
+    completed_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
 # ============================================================
 # TABLE HISTORIQUE
-#
-# Statistiques limitées.
-#
-# Pas de :
-# - idprofile
-# - réponses Cupid
-# - religion précise
-# - réponses sexuelles détaillées
-# - texte complet de conversation
 # ============================================================
-
+#
+# CETTE TABLE EST RÉSERVÉE À L'ADMINISTRATEUR.
+#
+# Elle sert uniquement à l'analyse statistique du service.
+#
+# L'APPLICATION MOBILE NE DOIT PAS :
+#
+# - lire cette table ;
+# - récupérer ses données ;
+# - afficher ses données ;
+# - modifier ses données ;
+# - supprimer ses données ;
+# - utiliser cette table pour retrouver un ancien résultat.
+#
+# Le serveur peut toutefois INSÉRER une ligne lorsqu'une
+# analyse est réalisée.
+#
+# ============================================================
+#
+# IMPORTANT :
+#
+# Aucun idprofile n'est enregistré.
+#
+# Aucune réponse Cupid complète n'est enregistrée.
+#
+# Aucun texte privé n'est enregistré.
+#
+# ============================================================
 class Historique(Base):
     __tablename__ = "historique"
 
@@ -182,20 +243,16 @@ class Historique(Base):
         nullable=True,
     )
 
-    # Mon profil -> attentes de l'autre
     match_my_to_their = Column(
         Integer,
         nullable=False,
     )
 
-    # Son profil -> mes attentes
     match_their_to_my = Column(
         Integer,
         nullable=False,
     )
 
-    # Ex:
-    # ["religion", "conflict_management"]
     conflit = Column(
         JSONB,
         nullable=False,
@@ -206,4 +263,5 @@ class Historique(Base):
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
+        index=True,
     )

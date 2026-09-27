@@ -2,7 +2,7 @@ import json
 import os
 import traceback
 import uuid
-
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import (
@@ -12,7 +12,6 @@ from fastapi import (
     Query,
     status,
 )
-
 from fastapi.middleware.cors import CORSMiddleware
 from groq import Groq
 from pydantic import BaseModel, Field
@@ -22,29 +21,23 @@ from sqlalchemy.orm import Session
 from database import Base, engine, get_db
 from models import Scan, MatchResult, Historique
 
-
 # ============================================================
 # DATABASE
 # ============================================================
-
 Base.metadata.create_all(bind=engine)
-
 
 # ============================================================
 # FASTAPI
 # ============================================================
-
 app = FastAPI(
     title="Deep Matching API",
     description="API serveur de l'application Deep Matching",
-    version="3.4.0",
+    version="4.0.0",
 )
-
 
 # ============================================================
 # CORS
 # ============================================================
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -53,43 +46,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # ============================================================
 # GROQ
 # ============================================================
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
     "openai/gpt-oss-120b",
 )
 
 groq_client: Optional[Groq] = None
-
 if GROQ_API_KEY:
     groq_client = Groq(
         api_key=GROQ_API_KEY
     )
 
-
 # ============================================================
 # PYDANTIC
 # ============================================================
-
 class ScanCreate(BaseModel):
     idprofile: str = Field(
         ...,
         min_length=1,
         max_length=100,
     )
-
     discussion_data: Dict[str, Any]
-
 
 class ScanUpdate(BaseModel):
     discussion_data: Dict[str, Any]
-
 
 class MatchRequest(BaseModel):
     my_profile_id: str = Field(
@@ -97,20 +81,20 @@ class MatchRequest(BaseModel):
         min_length=1,
         max_length=100,
     )
-
     scanned_profile_id: str = Field(
         ...,
         min_length=1,
         max_length=100,
     )
-
     language: str = "fr"
 
+class MatchReceivedRequest(BaseModel):
+    match_id: str
+    viewer_profile_id: str
 
 # ============================================================
 # LANGUES
 # ============================================================
-
 SUPPORTED_LANGUAGES = {
     "fr": "français",
     "en": "English",
@@ -118,14 +102,9 @@ SUPPORTED_LANGUAGES = {
     "pt": "português",
 }
 
-
 # ============================================================
-# CATÉGORIES INTERNES DE TENSION
-#
-# Ces clés sont utilisées par l'IA et PostgreSQL.
-# Elles ne sont jamais envoyées telles quelles à l'utilisateur.
+# TENSIONS INTERNES
 # ============================================================
-
 ALLOWED_TENSIONS = {
     "sexuality",
     "personality",
@@ -145,13 +124,10 @@ ALLOWED_TENSIONS = {
     "other",
 }
 
-
 # ============================================================
 # TRADUCTION DES TENSIONS
 # ============================================================
-
 TENSION_LABELS = {
-
     "fr": {
         "sexuality": "Sexualité",
         "personality": "Personnalité et comportement",
@@ -170,7 +146,6 @@ TENSION_LABELS = {
         "future_projects": "Projets de vie",
         "other": "Autres différences importantes",
     },
-
     "en": {
         "sexuality": "Sexuality",
         "personality": "Personality and behaviour",
@@ -189,7 +164,6 @@ TENSION_LABELS = {
         "future_projects": "Life plans",
         "other": "Other important differences",
     },
-
     "es": {
         "sexuality": "Sexualidad",
         "personality": "Personalidad y comportamiento",
@@ -208,7 +182,6 @@ TENSION_LABELS = {
         "future_projects": "Proyectos de vida",
         "other": "Otras diferencias importantes",
     },
-
     "pt": {
         "sexuality": "Sexualidade",
         "personality": "Personalidade e comportamento",
@@ -229,47 +202,35 @@ TENSION_LABELS = {
     },
 }
 
-
 # ============================================================
 # UTILITAIRES
 # ============================================================
-
 def normalize_language(
     language: str,
 ) -> str:
-
     value = (
         language or "fr"
     ).strip().lower()
-
     if value not in SUPPORTED_LANGUAGES:
         return "fr"
-
     return value
-
 
 def translate_tensions(
     tensions: List[str],
     language: str,
 ) -> List[str]:
-
     language = normalize_language(
         language
     )
-
     labels = TENSION_LABELS.get(
         language,
         TENSION_LABELS["fr"],
     )
-
     translated: List[str] = []
-
     for tension in tensions:
-
         label = labels.get(
             tension
         )
-
         if (
             label
             and label not in translated
@@ -277,27 +238,22 @@ def translate_tensions(
             translated.append(
                 label
             )
-
     return translated
-
 
 def clamp_score(
     value: Any,
 ) -> int:
-
     try:
         score = int(
             round(
                 float(value)
             )
         )
-
     except (
         ValueError,
         TypeError,
     ):
         return 0
-
     return max(
         0,
         min(
@@ -306,12 +262,10 @@ def clamp_score(
         ),
     )
 
-
 def get_profile_or_404(
     db: Session,
     profile_id: str,
 ) -> Scan:
-
     profile = (
         db.query(Scan)
         .filter(
@@ -320,59 +274,42 @@ def get_profile_or_404(
         )
         .first()
     )
-
     if profile is None:
-
         raise HTTPException(
             status_code=404,
             detail="Profil introuvable",
         )
-
     return profile
-
 
 def safe_text(
     value: Any,
 ) -> Optional[str]:
-
     if value is None:
         return None
-
     text = str(
         value
     ).strip()
-
     if not text:
         return None
-
     return text[:100]
-
 
 def first_value(
     data: Dict[str, Any],
     keys: List[str],
 ) -> Optional[str]:
-
     for key in keys:
-
         if key in data:
-
             value = safe_text(
                 data.get(key)
             )
-
             if value:
                 return value
-
     return None
-
 
 def extract_general_information(
     data: Dict[str, Any],
 ) -> Dict[str, Optional[str]]:
-
     return {
-
         "gender": first_value(
             data,
             [
@@ -381,7 +318,6 @@ def extract_general_information(
                 "my_gender",
             ],
         ),
-
         "orientation": first_value(
             data,
             [
@@ -391,7 +327,6 @@ def extract_general_information(
                 "relationship_orientation",
             ],
         ),
-
         "country": first_value(
             data,
             [
@@ -403,80 +338,79 @@ def extract_general_information(
         ),
     }
 
-
 # ============================================================
-# CONSTRUCTION DE LA RÉPONSE
+# CONSTRUCTION DU RÉSULTAT POUR UN UTILISATEUR
 # ============================================================
-
 def build_viewer_result(
     result: MatchResult,
     viewer_profile_id: str,
     language: str,
 ) -> Dict[str, Any]:
-
     language = normalize_language(
         language
     )
-
     translated_tensions = translate_tensions(
         result.tensions or [],
         language,
     )
 
     # --------------------------------------------------------
-    # PROFIL A = utilisateur qui a effectué le scan
+    # UTILISATEUR A
     # --------------------------------------------------------
-
     if (
         viewer_profile_id
         == result.profile_a_id
     ):
-
         return {
             "success": True,
-            "match_id": result.match_id,
-            "language": language,
-
+            "match_id":
+                result.match_id,
+            "language":
+                language,
             "compatibility": {
                 "my_profile_to_their_expectations":
-                    result.match_a_to_b,
-
+                    clamp_score(
+                        result.match_a_to_b
+                    ),
                 "their_profile_to_my_expectations":
-                    result.match_b_to_a,
+                    clamp_score(
+                        result.match_b_to_a
+                    ),
             },
-
             "tensions":
                 translated_tensions,
         }
 
     # --------------------------------------------------------
-    # PROFIL B = propriétaire du QR
-    #
-    # Les pourcentages sont inversés.
+    # UTILISATEUR B
     # --------------------------------------------------------
-
     if (
         viewer_profile_id
         == result.profile_b_id
     ):
-
         return {
             "success": True,
-            "match_id": result.match_id,
-            "language": language,
-
+            "match_id":
+                result.match_id,
+            "language":
+                language,
             "compatibility": {
                 "my_profile_to_their_expectations":
-                    result.match_b_to_a,
-
+                    clamp_score(
+                        result.match_b_to_a
+                    ),
                 "their_profile_to_my_expectations":
-                    result.match_a_to_b,
+                    clamp_score(
+                        result.match_a_to_b
+                    ),
             },
-
             "tensions":
                 translated_tensions,
         }
 
+    # --------------------------------------------------------
+    # PROFIL NON AUTORISÉ
+    # --------------------------------------------------------
     raise HTTPException(
         status_code=403,
         detail=(
@@ -485,48 +419,103 @@ def build_viewer_result(
         ),
     )
 
+# ============================================================
+# NETTOYAGE DU MATCH TEMPORAIRE
+# ============================================================
+def cleanup_finished_matches(
+    db: Session,
+    profile_id: str,
+) -> None:
+    matches = (
+        db.query(MatchResult)
+        .filter(
+            or_(
+                MatchResult.profile_a_id
+                == profile_id,
+                MatchResult.profile_b_id
+                == profile_id,
+            )
+        )
+        .all()
+    )
+
+    if not matches:
+        return
+
+    for match in matches:
+        # ----------------------------------------------------
+        # On ne supprime le match que si les DEUX profils Scan
+        # ont disparu. Cela garantit que les deux utilisateurs
+        # ont eu la possibilité de récupérer leur résultat.
+        # ----------------------------------------------------
+        profile_a_exists = (
+            db.query(Scan)
+            .filter(
+                Scan.idprofile
+                == match.profile_a_id
+            )
+            .first()
+            is not None
+        )
+        profile_b_exists = (
+            db.query(Scan)
+            .filter(
+                Scan.idprofile
+                == match.profile_b_id
+            )
+            .first()
+            is not None
+        )
+
+        if (
+            not profile_a_exists
+            and not profile_b_exists
+        ):
+            print(
+                "[MATCH CLEANUP] "
+                f"Suppression du résultat temporaire "
+                f"{match.match_id}",
+                flush=True,
+            )
+            db.delete(
+                match
+            )
 
 # ============================================================
 # ROOT
 # ============================================================
-
 @app.get("/")
 def root():
-
     return {
         "status": "ok",
         "service":
             "deep-matching-api",
         "version":
-            "3.4.0",
+            "4.0.0",
         "groq_model":
             GROQ_MODEL,
     }
 
-
 # ============================================================
 # HEALTH
 # ============================================================
-
 @app.get("/health")
 def health():
-
     return {
         "status": "ok",
-        "database": "PostgreSQL",
+        "database":
+            "PostgreSQL",
         "service":
             "deep-matching-api",
         "groq_configured":
             bool(GROQ_API_KEY),
         "version":
-            "3.4.0",
+            "4.0.0",
     }
-
 
 # ============================================================
 # CREATE / SYNC PROFILE
 # ============================================================
-
 @app.post(
     "/api/v1/scan",
     status_code=status.HTTP_201_CREATED,
@@ -535,7 +524,6 @@ def create_scan(
     payload: ScanCreate,
     db: Session = Depends(get_db),
 ):
-
     existing = (
         db.query(Scan)
         .filter(
@@ -546,32 +534,24 @@ def create_scan(
     )
 
     # --------------------------------------------------------
-    # Profil existant : mise à jour
+    # Profil déjà présent : mise à jour
     # --------------------------------------------------------
-
     if existing:
-
         existing.discussion_data = (
             payload.discussion_data
         )
-
         try:
-
             db.commit()
             db.refresh(
                 existing
             )
-
         except Exception as e:
-
             db.rollback()
-
             print(
                 "[DATABASE][SYNC] "
                 f"{type(e).__name__}: {e}",
                 flush=True,
             )
-
             raise HTTPException(
                 status_code=500,
                 detail=(
@@ -579,7 +559,6 @@ def create_scan(
                     "synchroniser le profil"
                 ),
             )
-
         return {
             "success": True,
             "message":
@@ -593,35 +572,27 @@ def create_scan(
     # --------------------------------------------------------
     # Nouveau profil
     # --------------------------------------------------------
-
     scan = Scan(
-        idprofile=payload.idprofile,
-        discussion_data=(
-            payload.discussion_data
-        ),
+        idprofile=
+        payload.idprofile,
+        discussion_data=
+        payload.discussion_data,
     )
-
     db.add(
         scan
     )
-
     try:
-
         db.commit()
         db.refresh(
             scan
         )
-
     except Exception as e:
-
         db.rollback()
-
         print(
             "[DATABASE][CREATE] "
             f"{type(e).__name__}: {e}",
             flush=True,
         )
-
         raise HTTPException(
             status_code=500,
             detail=(
@@ -629,7 +600,11 @@ def create_scan(
                 "le profil"
             ),
         )
-
+    print(
+        "[PROFILE CREATED] "
+        f"{scan.idprofile}",
+        flush=True,
+    )
     return {
         "success": True,
         "message":
@@ -640,11 +615,9 @@ def create_scan(
             scan.idprofile,
     }
 
-
 # ============================================================
 # PROFILE EXISTS
 # ============================================================
-
 @app.get(
     "/api/v1/scan/{idprofile}/exists"
 )
@@ -652,7 +625,6 @@ def profile_exists(
     idprofile: str,
     db: Session = Depends(get_db),
 ):
-
     profile = (
         db.query(Scan)
         .filter(
@@ -661,7 +633,6 @@ def profile_exists(
         )
         .first()
     )
-
     return {
         "idprofile":
             idprofile,
@@ -669,15 +640,9 @@ def profile_exists(
             profile is not None,
     }
 
-
 # ============================================================
 # GET PROFILE
-#
-# ATTENTION :
-# discussion_data contient les réponses privées Cupid.
-# Cet endpoint devra être protégé ou supprimé avant production.
 # ============================================================
-
 @app.get(
     "/api/v1/scan/{idprofile}"
 )
@@ -685,34 +650,26 @@ def get_scan(
     idprofile: str,
     db: Session = Depends(get_db),
 ):
-
     scan = get_profile_or_404(
         db,
         idprofile,
     )
-
     return {
         "id":
             scan.id,
-
         "idprofile":
             scan.idprofile,
-
         "discussion_data":
             scan.discussion_data,
-
         "created_at":
             scan.created_at,
-
         "updated_at":
             scan.updated_at,
     }
 
-
 # ============================================================
 # UPDATE PROFILE
 # ============================================================
-
 @app.put(
     "/api/v1/scan/{idprofile}"
 )
@@ -721,33 +678,25 @@ def update_scan(
     payload: ScanUpdate,
     db: Session = Depends(get_db),
 ):
-
     scan = get_profile_or_404(
         db,
         idprofile,
     )
-
     scan.discussion_data = (
         payload.discussion_data
     )
-
     try:
-
         db.commit()
         db.refresh(
             scan
         )
-
     except Exception as e:
-
         db.rollback()
-
         print(
             "[DATABASE][UPDATE] "
             f"{type(e).__name__}: {e}",
             flush=True,
         )
-
         raise HTTPException(
             status_code=500,
             detail=(
@@ -755,7 +704,6 @@ def update_scan(
                 "à jour le profil"
             ),
         )
-
     return {
         "success": True,
         "message":
@@ -764,11 +712,19 @@ def update_scan(
             scan.idprofile,
     }
 
-
 # ============================================================
 # DELETE PROFILE
 # ============================================================
-
+#
+# IMPORTANT :
+#
+# Cette suppression ne touche JAMAIS Historique.
+#
+# Elle supprime uniquement le profil temporaire Scan.
+#
+# Si les deux profils du match ont disparu, le MatchResult
+# temporaire est également supprimé.
+# ============================================================
 @app.delete(
     "/api/v1/scan/{idprofile}"
 )
@@ -776,30 +732,38 @@ def delete_scan(
     idprofile: str,
     db: Session = Depends(get_db),
 ):
-
     scan = get_profile_or_404(
         db,
         idprofile,
     )
-
+    print(
+        "[PROFILE DELETE] "
+        f"{idprofile}",
+        flush=True,
+    )
     try:
-
         db.delete(
             scan
         )
-
+        db.flush()
+        # ----------------------------------------------------
+        # Nettoyage éventuel du résultat temporaire.
+        #
+        # Historique n'est PAS touché.
+        # ----------------------------------------------------
+        cleanup_finished_matches(
+            db,
+            idprofile,
+        )
         db.commit()
-
     except Exception as e:
-
         db.rollback()
-
         print(
             "[DATABASE][DELETE] "
             f"{type(e).__name__}: {e}",
             flush=True,
         )
-
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail=(
@@ -807,7 +771,6 @@ def delete_scan(
                 "le profil"
             ),
         )
-
     return {
         "success": True,
         "message":
@@ -816,11 +779,9 @@ def delete_scan(
             idprofile,
     }
 
-
 # ============================================================
 # VERIFY MATCH
 # ============================================================
-
 @app.post(
     "/api/v1/match/verify"
 )
@@ -828,7 +789,6 @@ def verify_match(
     payload: MatchRequest,
     db: Session = Depends(get_db),
 ):
-
     my_profile = (
         db.query(Scan)
         .filter(
@@ -837,7 +797,6 @@ def verify_match(
         )
         .first()
     )
-
     scanned_profile = (
         db.query(Scan)
         .filter(
@@ -846,30 +805,24 @@ def verify_match(
         )
         .first()
     )
-
     return {
         "ready": (
             my_profile is not None
             and scanned_profile is not None
         ),
-
         "my_profile_exists":
             my_profile is not None,
-
         "scanned_profile_exists":
             scanned_profile is not None,
     }
 
-
 # ============================================================
 # PROMPT DEEP MATCHING
 # ============================================================
-
 def build_match_prompt(
     profile_a: Dict[str, Any],
     profile_b: Dict[str, Any],
 ) -> str:
-
     return f"""
 Tu es le moteur d'analyse sémantique de Deep Matching.
 
@@ -1090,11 +1043,9 @@ PROFIL B
 )}
 """
 
-
 # ============================================================
 # ANALYSE MATCH
 # ============================================================
-
 @app.post(
     "/api/v1/match"
 )
@@ -1102,16 +1053,13 @@ def analyze_match(
     payload: MatchRequest,
     db: Session = Depends(get_db),
 ):
-
     # --------------------------------------------------------
-    # Vérification GROQ
+    # GROQ
     # --------------------------------------------------------
-
     if (
         not GROQ_API_KEY
         or groq_client is None
     ):
-
         raise HTTPException(
             status_code=503,
             detail=(
@@ -1121,14 +1069,12 @@ def analyze_match(
         )
 
     # --------------------------------------------------------
-    # Empêcher l'auto-match
+    # AUTO MATCH
     # --------------------------------------------------------
-
     if (
         payload.my_profile_id
         == payload.scanned_profile_id
     ):
-
         raise HTTPException(
             status_code=400,
             detail=(
@@ -1138,41 +1084,49 @@ def analyze_match(
         )
 
     # --------------------------------------------------------
-    # Récupération des profils
+    # RÉCUPÉRATION DES PROFILS
     # --------------------------------------------------------
-
     profile_a = get_profile_or_404(
         db,
         payload.my_profile_id,
     )
-
     profile_b = get_profile_or_404(
         db,
         payload.scanned_profile_id,
     )
-
     data_a = (
         profile_a.discussion_data
         or {}
     )
-
     data_b = (
         profile_b.discussion_data
         or {}
     )
 
     print(
-        "[MATCH] "
-        f"{payload.my_profile_id}"
-        " <-> "
-        f"{payload.scanned_profile_id}",
+        "================================================",
+        flush=True,
+    )
+    print(
+        "[MATCH]",
+        flush=True,
+    )
+    print(
+        f"A = {payload.my_profile_id}",
+        flush=True,
+    )
+    print(
+        f"B = {payload.scanned_profile_id}",
+        flush=True,
+    )
+    print(
+        "================================================",
         flush=True,
     )
 
     # --------------------------------------------------------
-    # Construction du prompt
+    # PROMPT
     # --------------------------------------------------------
-
     prompt = build_match_prompt(
         data_a,
         data_b,
@@ -1181,73 +1135,66 @@ def analyze_match(
     # --------------------------------------------------------
     # GROQ
     # --------------------------------------------------------
-
     try:
-
         print(
             "[GROQ] "
             f"Model: {GROQ_MODEL}",
             flush=True,
         )
-
         completion = (
             groq_client
             .chat
             .completions
             .create(
                 model=GROQ_MODEL,
-
                 messages=[
                     {
-                        "role": "system",
-                        "content": (
-                            "Analyse les deux profils "
-                            "relationnels. "
-                            "Retourne uniquement "
-                            "le JSON demandé."
-                        ),
+                        "role":
+                            "system",
+                        "content":
+                            (
+                                "Analyse les deux "
+                                "profils relationnels. "
+                                "Retourne uniquement "
+                                "le JSON demandé."
+                            ),
                     },
                     {
-                        "role": "user",
-                        "content": prompt,
+                        "role":
+                            "user",
+                        "content":
+                            prompt,
                     },
                 ],
-
                 temperature=0.1,
-
                 response_format={
-                    "type": "json_object"
+                    "type":
+                        "json_object"
                 },
             )
         )
-
         if not completion.choices:
             raise ValueError(
                 "Aucun résultat Groq"
             )
-
         content = (
             completion
             .choices[0]
             .message
             .content
         )
-
         if not content:
             raise ValueError(
                 "Réponse Groq vide"
             )
-
         print(
             "[GROQ][RAW] "
             f"{content}",
             flush=True,
         )
-
         result = json.loads(
             content
         )
-
         if not isinstance(
             result,
             dict,
@@ -1255,36 +1202,28 @@ def analyze_match(
             raise ValueError(
                 "Format JSON Groq invalide"
             )
-
     except Exception as e:
-
         print(
             "================================",
             flush=True,
         )
-
         print(
             "[GROQ ERROR]",
             flush=True,
         )
-
         print(
             f"Type: {type(e).__name__}",
             flush=True,
         )
-
         print(
             f"Message: {e}",
             flush=True,
         )
-
         traceback.print_exc()
-
         print(
             "================================",
             flush=True,
         )
-
         raise HTTPException(
             status_code=502,
             detail=(
@@ -1296,14 +1235,12 @@ def analyze_match(
     # ========================================================
     # SCORES
     # ========================================================
-
     match_a_to_b = clamp_score(
         result.get(
             "a_to_b",
             0,
         )
     )
-
     match_b_to_a = clamp_score(
         result.get(
             "b_to_a",
@@ -1314,30 +1251,23 @@ def analyze_match(
     # ========================================================
     # TENSIONS INTERNES
     # ========================================================
-
     raw_tensions = result.get(
         "tensions",
         [],
     )
-
     tensions: List[str] = []
-
     if isinstance(
         raw_tensions,
         list,
     ):
-
         for item in raw_tensions:
-
             tension = (
                 str(item)
                 .strip()
                 .lower()
             )
-
             if (
-                tension
-                in ALLOWED_TENSIONS
+                tension                in ALLOWED_TENSIONS
                 and tension
                 not in tensions
             ):
@@ -1348,7 +1278,6 @@ def analyze_match(
     # ========================================================
     # MATCH ID
     # ========================================================
-
     match_id = (
         "DM-"
         + uuid.uuid4()
@@ -1357,124 +1286,82 @@ def analyze_match(
     )
 
     # ========================================================
-    # RÉSULTAT DU MATCH
+    # MATCH RESULT TEMPORAIRE
     # ========================================================
-
     match_result = MatchResult(
-        match_id=match_id,
-
-        profile_a_id=(
-            payload.my_profile_id
-        ),
-
-        profile_b_id=(
-            payload.scanned_profile_id
-        ),
-
-        match_a_to_b=(
-            match_a_to_b
-        ),
-
-        match_b_to_a=(
-            match_b_to_a
-        ),
-
-        tensions=tensions,
-
+        match_id=
+            match_id,
+        profile_a_id=
+            payload.my_profile_id,
+        profile_b_id=
+            payload.scanned_profile_id,
+        match_a_to_b=
+            match_a_to_b,
+        match_b_to_a=
+            match_b_to_a,
+        tensions=
+            tensions,
         summary=None,
+        scanner_received=False,
+        owner_received=False,
     )
 
     # ========================================================
     # INFORMATIONS POUR HISTORIQUE
     # ========================================================
-
-    info_a = (
-        extract_general_information(
-            data_a
-        )
+    info_a = extract_general_information(
+        data_a
     )
-
-    info_b = (
-        extract_general_information(
-            data_b
-        )
+    info_b = extract_general_information(
+        data_b
     )
 
     # ========================================================
-    # HISTORIQUE
+    # HISTORIQUE ADMINISTRATEUR
     # ========================================================
-
     historique = Historique(
-
-        my_gender=(
-            info_a["gender"]
-        ),
-
-        scanned_gender=(
-            info_b["gender"]
-        ),
-
-        my_orientation=(
-            info_a["orientation"]
-        ),
-
-        scanned_orientation=(
-            info_b["orientation"]
-        ),
-
-        my_country=(
-            info_a["country"]
-        ),
-
-        scanned_country=(
-            info_b["country"]
-        ),
-
-        match_my_to_their=(
-            match_a_to_b
-        ),
-
-        match_their_to_my=(
-            match_b_to_a
-        ),
-
-        # On conserve uniquement les catégories,
-        # jamais les réponses Cupid.
-        conflit=tensions,
+        my_gender=
+            info_a["gender"],
+        scanned_gender=
+            info_b["gender"],
+        my_orientation=
+            info_a["orientation"],
+        scanned_orientation=
+            info_b["orientation"],
+        my_country=
+            info_a["country"],
+        scanned_country=
+            info_b["country"],
+        match_my_to_their=
+            match_a_to_b,
+        match_their_to_my=
+            match_b_to_a,
+        conflit=
+            tensions,
     )
 
     # ========================================================
     # ENREGISTREMENT
     # ========================================================
-
     try:
-
         db.add(
             match_result
         )
-
         db.add(
             historique
         )
-
         db.commit()
-
         db.refresh(
             match_result
         )
-
     except Exception as e:
-
         db.rollback()
-
         print(
             "[DATABASE][MATCH] "
             f"{type(e).__name__}: {e}",
             flush=True,
         )
-
         traceback.print_exc()
-
         raise HTTPException(
             status_code=500,
             detail=(
@@ -1484,10 +1371,30 @@ def analyze_match(
             ),
         )
 
-    # ========================================================
-    # RÉPONSE POUR LE SCANNEUR
-    # ========================================================
+    print(
+        "[MATCH SAVED]",
+        flush=True,
+    )
+    print(
+        f"Match ID : {match_id}",
+        flush=True,
+    )
+    print(
+        f"A -> B : {match_a_to_b}%",
+        flush=True,
+    )
+    print(
+        f"B -> A : {match_b_to_a}%",
+        flush=True,
+    )
+    print(
+        f"Tensions : {tensions}",
+        flush=True,
+    )
 
+    # ========================================================
+    # RÉSULTAT POUR LE SCANNER
+    # ========================================================
     response = build_viewer_result(
         match_result,
         payload.my_profile_id,
@@ -1495,27 +1402,105 @@ def analyze_match(
     )
 
     print(
-        "[MATCH][RESPONSE] "
-        f"{response}",
+        "[MATCH][SCANNER RESPONSE]",
         flush=True,
     )
-
+    print(
+        response,
+        flush=True,
+    )
     return response
 
+# ============================================================
+# MARQUER UN MATCH COMME REÇU
+# ============================================================
+@app.post(
+    "/api/v1/match/received"
+)
+def mark_match_received(
+    payload: MatchReceivedRequest,
+    db: Session = Depends(get_db),
+):
+    result = (
+        db.query(MatchResult)
+        .filter(
+            MatchResult.match_id
+            == payload.match_id
+        )
+        .first()
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Match introuvable",
+        )
+
+    # --------------------------------------------------------
+    # Mise à jour de l'indicateur de réception
+    # --------------------------------------------------------
+    if payload.viewer_profile_id == result.profile_a_id:
+        result.scanner_received = True
+        print(
+            f"[MATCH RECEIVED] Scanner "
+            f"a reçu {payload.match_id}",
+            flush=True,
+        )
+    elif payload.viewer_profile_id == result.profile_b_id:
+        result.owner_received = True
+        print(
+            f"[MATCH RECEIVED] Owner "
+            f"a reçu {payload.match_id}",
+            flush=True,
+        )
+    else:
+        raise HTTPException(
+            status_code=403,
+            detail="Profil non autorisé pour ce match",
+        )
+
+    # --------------------------------------------------------
+    # Si les deux ont reçu le résultat, on supprime
+    # le MatchResult temporaire.
+    # --------------------------------------------------------
+    if result.scanner_received and result.owner_received:
+        print(
+            f"[MATCH CONSUMED] "
+            f"Suppression de {result.match_id}",
+            flush=True,
+        )
+        db.delete(result)
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Impossible de marquer le match comme reçu",
+        )
+
+    return {"success": True}
 
 # ============================================================
 # DERNIER MATCH D'UN PROFIL
+# ============================================================
+#
+# Cette route est utilisée par le propriétaire du QR.
 #
 # IMPORTANT :
-# Cette route ne se trouve plus sous :
 #
-# /api/v1/match/latest/...
+# Elle lit UNIQUEMENT MatchResult.
 #
-# Cela évite la collision avec :
+# Elle ne lit JAMAIS Historique.
 #
-# /api/v1/match/{match_id}/{viewer_profile_id}
+# Elle ne retourne un résultat que si :
+#
+# 1. Le profil existe encore (Scan).
+# 2. Un MatchResult existe pour ce profil.
+# 3. Le propriétaire du QR n'a pas encore reçu ce résultat
+#    (owner_received == False).
+#
 # ============================================================
-
 @app.get(
     "/api/v1/profile/{viewer_profile_id}/latest-match"
 )
@@ -1526,17 +1511,47 @@ def get_latest_match(
     ),
     db: Session = Depends(get_db),
 ):
+    # --------------------------------------------------------
+    # Le profil doit encore exister.
+    # --------------------------------------------------------
+    profile_exists = (
+        db.query(Scan)
+        .filter(
+            Scan.idprofile
+            == viewer_profile_id
+        )
+        .first()
+        is not None
+    )
+    if not profile_exists:
+        print(
+            "[LATEST MATCH] "
+            f"Profil absent : {viewer_profile_id}",
+            flush=True,
+        )
+        return {
+            "success":
+                True,
+            "found":
+                False,
+        }
 
+    # --------------------------------------------------------
+    # Recherche du dernier résultat temporaire
+    # --------------------------------------------------------
     result = (
         db.query(MatchResult)
         .filter(
             or_(
                 MatchResult.profile_a_id
                 == viewer_profile_id,
-
                 MatchResult.profile_b_id
                 == viewer_profile_id,
             )
+        )
+        .filter(
+            # Le propriétaire du QR (B) n'a pas encore reçu le résultat
+            MatchResult.owner_received == False
         )
         .order_by(
             MatchResult.created_at.desc(),
@@ -1546,12 +1561,22 @@ def get_latest_match(
     )
 
     if result is None:
-
+        print(
+            "[LATEST MATCH] "
+            f"Aucun résultat pour "
+            f"{viewer_profile_id}",
+            flush=True,
+        )
         return {
-            "success": True,
-            "found": False,
+            "success":
+                True,
+            "found":
+                False,
         }
 
+    # --------------------------------------------------------
+    # Construction selon la langue du téléphone
+    # --------------------------------------------------------
     viewer_result = build_viewer_result(
         result,
         viewer_profile_id,
@@ -1560,17 +1585,29 @@ def get_latest_match(
 
     viewer_result["found"] = True
 
-    return viewer_result
+    print(
+        "[LATEST MATCH]",
+        flush=True,
+    )
+    print(
+        f"PROFILE : {viewer_profile_id}",
+        flush=True,
+    )
+    print(
+        f"MATCH : {result.match_id}",
+        flush=True,
+    )
+    print(
+        f"LANGUAGE : "
+        f"{normalize_language(language)}",
+        flush=True,
+    )
 
+    return viewer_result
 
 # ============================================================
 # RÉCUPÉRER UN MATCH PRÉCIS
-#
-# Exemple :
-#
-# /api/v1/match/DM-XXX/DMP-XXX?language=fr
 # ============================================================
-
 @app.get(
     "/api/v1/match/{match_id}/{viewer_profile_id}"
 )
@@ -1582,7 +1619,6 @@ def get_match_result(
     ),
     db: Session = Depends(get_db),
 ):
-
     result = (
         db.query(MatchResult)
         .filter(
@@ -1591,12 +1627,31 @@ def get_match_result(
         )
         .first()
     )
-
     if result is None:
-
         raise HTTPException(
             status_code=404,
             detail="Match introuvable",
+        )
+
+    # --------------------------------------------------------
+    # Vérification que le profil existe encore.
+    # --------------------------------------------------------
+    viewer_exists = (
+        db.query(Scan)
+        .filter(
+            Scan.idprofile
+            == viewer_profile_id
+        )
+        .first()
+        is not None
+    )
+    if not viewer_exists:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Profil utilisateur "
+                "introuvable"
+            ),
         )
 
     return build_viewer_result(
