@@ -21,6 +21,23 @@ from sqlalchemy.orm import Session
 from database import Base, engine, get_db
 from models import Scan, MatchResult, Historique
 
+
+# Détecte si on est en production via une variable d'environnement
+is_production = os.getenv("ENVIRONMENT") == "production"
+
+app = FastAPI(
+    title="Deep Matching API",
+    description="API serveur de l'application Deep Matching",
+    version="4.0.0",
+    # Désactive les docs en production
+    docs_url=None if is_production else "/docs",
+    redoc_url=None if is_production else "/redoc",
+    openapi_url=None if is_production else "/openapi.json",
+)
+
+
+
+
 # ============================================================
 # DATABASE
 # ============================================================
