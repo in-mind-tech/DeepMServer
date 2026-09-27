@@ -20,42 +20,33 @@ from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
 from models import Scan, MatchResult, Historique
+from admin import setup_admin  # <-- IMPORT AJOUTÉ
 
 
-# Détecte si on est en production via une variable d'environnement
+# ============================================================
+# DÉTECTION PRODUCTION
+# ============================================================
 is_production = os.getenv("ENVIRONMENT") == "production"
 
-app = FastAPI(
-    title="Deep Matching API",
-    description="API serveur de l'application Deep Matching",
-    version="4.0.0",
-    # Désactive les docs en production
-    docs_url=None if is_production else "/docs",
-    redoc_url=None if is_production else "/redoc",
-    openapi_url=None if is_production else "/openapi.json",
-)
 
-
-
-
-# ============================================================
-# DATABASE
-# ============================================================
 # ============================================================
 # DATABASE
 # ============================================================
 Base.metadata.create_all(bind=engine)
 
 
-
 # ============================================================
-# FASTAPI
+# FASTAPI (UNE SEULE INSTANCE)
 # ============================================================
 app = FastAPI(
     title="Deep Matching API",
     description="API serveur de l'application Deep Matching",
     version="4.0.0",
+    docs_url=None if is_production else "/docs",
+    redoc_url=None if is_production else "/redoc",
+    openapi_url=None if is_production else "/openapi.json",
 )
+
 
 # ============================================================
 # CORS
@@ -67,6 +58,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ============================================================
+# SQLADMIN (DASHBOARD)
+# ============================================================
+print("[MAIN] Initialisation de SQLAdmin...", flush=True)
+try:
+    admin = setup_admin(app)
+    print("[MAIN] SQLAdmin initialisé avec succès.", flush=True)
+except Exception as e:
+    print(
+        f"[MAIN] ERREUR SQLAdmin : {type(e).__name__}: {e}",
+        flush=True,
+    )
+    traceback.print_exc()
+
 
 # ============================================================
 # GROQ
@@ -83,6 +90,7 @@ if GROQ_API_KEY:
         api_key=GROQ_API_KEY
     )
 
+
 # ============================================================
 # PYDANTIC
 # ============================================================
@@ -94,8 +102,10 @@ class ScanCreate(BaseModel):
     )
     discussion_data: Dict[str, Any]
 
+
 class ScanUpdate(BaseModel):
     discussion_data: Dict[str, Any]
+
 
 class MatchRequest(BaseModel):
     my_profile_id: str = Field(
@@ -110,9 +120,11 @@ class MatchRequest(BaseModel):
     )
     language: str = "fr"
 
+
 class MatchReceivedRequest(BaseModel):
     match_id: str
     viewer_profile_id: str
+
 
 # ============================================================
 # LANGUES
@@ -123,6 +135,7 @@ SUPPORTED_LANGUAGES = {
     "es": "español",
     "pt": "português",
 }
+
 
 # ============================================================
 # TENSIONS INTERNES
@@ -145,6 +158,7 @@ ALLOWED_TENSIONS = {
     "future_projects",
     "other",
 }
+
 
 # ============================================================
 # TRADUCTION DES TENSIONS
@@ -224,76 +238,43 @@ TENSION_LABELS = {
     },
 }
 
+
 # ============================================================
 # UTILITAIRES
 # ============================================================
-def normalize_language(
-    language: str,
-) -> str:
-    value = (
-        language or "fr"
-    ).strip().lower()
+def normalize_language(language: str) -> str:
+    value = (language or "fr").strip().lower()
     if value not in SUPPORTED_LANGUAGES:
         return "fr"
     return value
+
 
 def translate_tensions(
     tensions: List[str],
     language: str,
 ) -> List[str]:
-    language = normalize_language(
-        language
-    )
-    labels = TENSION_LABELS.get(
-        language,
-        TENSION_LABELS["fr"],
-    )
+    language = normalize_language(language)
+    labels = TENSION_LABELS.get(language, TENSION_LABELS["fr"])
     translated: List[str] = []
     for tension in tensions:
-        label = labels.get(
-            tension
-        )
-        if (
-            label
-            and label not in translated
-        ):
-            translated.append(
-                label
-            )
+        label = labels.get(tension)
+        if label and label not in translated:
+            translated.append(label)
     return translated
 
-def clamp_score(
-    value: Any,
-) -> int:
-    try:
-        score = int(
-            round(
-                float(value)
-            )
-        )
-    except (
-        ValueError,
-        TypeError,
-    ):
-        return 0
-    return max(
-        0,
-        min(
-            100,
-            score,
-        ),
-    )
 
-def get_profile_or_404(
-    db: Session,
-    profile_id: str,
-) -> Scan:
+def clamp_score(value: Any) -> int:
+    try:
+        score = int(round(float(value)))
+    except (ValueError, TypeError):
+        return 0
+    return max(0, min(100, score))
+
+
+def get_profile_or_404(db: Session, profile_id: str) -> Scan:
     profile = (
         db.query(Scan)
-        .filter(
-            Scan.idprofile
-            == profile_id
-        )
+        .filter(Scan.idprofile == profile_id)
         .first()
     )
     if profile is None:
@@ -303,17 +284,15 @@ def get_profile_or_404(
         )
     return profile
 
-def safe_text(
-    value: Any,
-) -> Optional[str]:
+
+def safe_text(value: Any) -> Optional[str]:
     if value is None:
         return None
-    text = str(
-        value
-    ).strip()
+    text = str(value).strip()
     if not text:
         return None
     return text[:100]
+
 
 def first_value(
     data: Dict[str, Any],
@@ -321,12 +300,11 @@ def first_value(
 ) -> Optional[str]:
     for key in keys:
         if key in data:
-            value = safe_text(
-                data.get(key)
-            )
+            value = safe_text(data.get(key))
             if value:
                 return value
     return None
+
 
 def extract_general_information(
     data: Dict[str, Any],
@@ -334,11 +312,7 @@ def extract_general_information(
     return {
         "gender": first_value(
             data,
-            [
-                "gender",
-                "sex",
-                "my_gender",
-            ],
+            ["gender", "sex", "my_gender"],
         ),
         "orientation": first_value(
             data,
@@ -360,6 +334,7 @@ def extract_general_information(
         ),
     }
 
+
 # ============================================================
 # CONSTRUCTION DU RÉSULTAT POUR UN UTILISATEUR
 # ============================================================
@@ -368,78 +343,48 @@ def build_viewer_result(
     viewer_profile_id: str,
     language: str,
 ) -> Dict[str, Any]:
-    language = normalize_language(
-        language
-    )
+    language = normalize_language(language)
     translated_tensions = translate_tensions(
         result.tensions or [],
         language,
     )
 
-    # --------------------------------------------------------
     # UTILISATEUR A
-    # --------------------------------------------------------
-    if (
-        viewer_profile_id
-        == result.profile_a_id
-    ):
+    if viewer_profile_id == result.profile_a_id:
         return {
             "success": True,
-            "match_id":
-                result.match_id,
-            "language":
-                language,
+            "match_id": result.match_id,
+            "language": language,
             "compatibility": {
                 "my_profile_to_their_expectations":
-                    clamp_score(
-                        result.match_a_to_b
-                    ),
+                    clamp_score(result.match_a_to_b),
                 "their_profile_to_my_expectations":
-                    clamp_score(
-                        result.match_b_to_a
-                    ),
+                    clamp_score(result.match_b_to_a),
             },
-            "tensions":
-                translated_tensions,
+            "tensions": translated_tensions,
         }
 
-    # --------------------------------------------------------
     # UTILISATEUR B
-    # --------------------------------------------------------
-    if (
-        viewer_profile_id
-        == result.profile_b_id
-    ):
+    if viewer_profile_id == result.profile_b_id:
         return {
             "success": True,
-            "match_id":
-                result.match_id,
-            "language":
-                language,
+            "match_id": result.match_id,
+            "language": language,
             "compatibility": {
                 "my_profile_to_their_expectations":
-                    clamp_score(
-                        result.match_b_to_a
-                    ),
+                    clamp_score(result.match_b_to_a),
                 "their_profile_to_my_expectations":
-                    clamp_score(
-                        result.match_a_to_b
-                    ),
+                    clamp_score(result.match_a_to_b),
             },
-            "tensions":
-                translated_tensions,
+            "tensions": translated_tensions,
         }
 
-    # --------------------------------------------------------
     # PROFIL NON AUTORISÉ
-    # --------------------------------------------------------
     raise HTTPException(
         status_code=403,
-        detail=(
-            "Ce profil ne participe "
-            "pas à ce match"
-        ),
+        detail="Ce profil ne participe pas à ce match",
     )
+
 
 # ============================================================
 # NETTOYAGE DU MATCH TEMPORAIRE
@@ -452,56 +397,35 @@ def cleanup_finished_matches(
         db.query(MatchResult)
         .filter(
             or_(
-                MatchResult.profile_a_id
-                == profile_id,
-                MatchResult.profile_b_id
-                == profile_id,
+                MatchResult.profile_a_id == profile_id,
+                MatchResult.profile_b_id == profile_id,
             )
         )
         .all()
     )
-
     if not matches:
         return
-
     for match in matches:
-        # ----------------------------------------------------
-        # On ne supprime le match que si les DEUX profils Scan
-        # ont disparu. Cela garantit que les deux utilisateurs
-        # ont eu la possibilité de récupérer leur résultat.
-        # ----------------------------------------------------
         profile_a_exists = (
             db.query(Scan)
-            .filter(
-                Scan.idprofile
-                == match.profile_a_id
-            )
+            .filter(Scan.idprofile == match.profile_a_id)
             .first()
             is not None
         )
         profile_b_exists = (
             db.query(Scan)
-            .filter(
-                Scan.idprofile
-                == match.profile_b_id
-            )
+            .filter(Scan.idprofile == match.profile_b_id)
             .first()
             is not None
         )
-
-        if (
-            not profile_a_exists
-            and not profile_b_exists
-        ):
+        if not profile_a_exists and not profile_b_exists:
             print(
-                "[MATCH CLEANUP] "
-                f"Suppression du résultat temporaire "
-                f"{match.match_id}",
+                "[MATCH CLEANUP] Suppression du résultat "
+                f"temporaire {match.match_id}",
                 flush=True,
             )
-            db.delete(
-                match
-            )
+            db.delete(match)
+
 
 # ============================================================
 # ROOT
@@ -510,13 +434,11 @@ def cleanup_finished_matches(
 def root():
     return {
         "status": "ok",
-        "service":
-            "deep-matching-api",
-        "version":
-            "4.0.0",
-        "groq_model":
-            GROQ_MODEL,
+        "service": "deep-matching-api",
+        "version": "4.0.0",
+        "groq_model": GROQ_MODEL,
     }
+
 
 # ============================================================
 # HEALTH
@@ -525,15 +447,12 @@ def root():
 def health():
     return {
         "status": "ok",
-        "database":
-            "PostgreSQL",
-        "service":
-            "deep-matching-api",
-        "groq_configured":
-            bool(GROQ_API_KEY),
-        "version":
-            "4.0.0",
+        "database": "PostgreSQL",
+        "service": "deep-matching-api",
+        "groq_configured": bool(GROQ_API_KEY),
+        "version": "4.0.0",
     }
+
 
 # ============================================================
 # CREATE / SYNC PROFILE
@@ -548,283 +467,176 @@ def create_scan(
 ):
     existing = (
         db.query(Scan)
-        .filter(
-            Scan.idprofile
-            == payload.idprofile
-        )
+        .filter(Scan.idprofile == payload.idprofile)
         .first()
     )
 
-    # --------------------------------------------------------
-    # Profil déjà présent : mise à jour
-    # --------------------------------------------------------
     if existing:
-        existing.discussion_data = (
-            payload.discussion_data
-        )
+        existing.discussion_data = payload.discussion_data
         try:
             db.commit()
-            db.refresh(
-                existing
-            )
+            db.refresh(existing)
         except Exception as e:
             db.rollback()
             print(
-                "[DATABASE][SYNC] "
-                f"{type(e).__name__}: {e}",
+                f"[DATABASE][SYNC] {type(e).__name__}: {e}",
                 flush=True,
             )
             raise HTTPException(
                 status_code=500,
-                detail=(
-                    "Impossible de "
-                    "synchroniser le profil"
-                ),
+                detail="Impossible de synchroniser le profil",
             )
         return {
             "success": True,
-            "message":
-                "Profil synchronisé",
-            "id":
-                existing.id,
-            "idprofile":
-                existing.idprofile,
+            "message": "Profil synchronisé",
+            "id": existing.id,
+            "idprofile": existing.idprofile,
         }
 
-    # --------------------------------------------------------
-    # Nouveau profil
-    # --------------------------------------------------------
     scan = Scan(
-        idprofile=
-        payload.idprofile,
-        discussion_data=
-        payload.discussion_data,
+        idprofile=payload.idprofile,
+        discussion_data=payload.discussion_data,
     )
-    db.add(
-        scan
-    )
+    db.add(scan)
     try:
         db.commit()
-        db.refresh(
-            scan
-        )
+        db.refresh(scan)
     except Exception as e:
         db.rollback()
         print(
-            "[DATABASE][CREATE] "
-            f"{type(e).__name__}: {e}",
+            f"[DATABASE][CREATE] {type(e).__name__}: {e}",
             flush=True,
         )
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Impossible d'enregistrer "
-                "le profil"
-            ),
+            detail="Impossible d'enregistrer le profil",
         )
-    print(
-        "[PROFILE CREATED] "
-        f"{scan.idprofile}",
-        flush=True,
-    )
+    print(f"[PROFILE CREATED] {scan.idprofile}", flush=True)
     return {
         "success": True,
-        "message":
-            "Profil enregistré",
-        "id":
-            scan.id,
-        "idprofile":
-            scan.idprofile,
+        "message": "Profil enregistré",
+        "id": scan.id,
+        "idprofile": scan.idprofile,
     }
+
 
 # ============================================================
 # PROFILE EXISTS
 # ============================================================
-@app.get(
-    "/api/v1/scan/{idprofile}/exists"
-)
+@app.get("/api/v1/scan/{idprofile}/exists")
 def profile_exists(
     idprofile: str,
     db: Session = Depends(get_db),
 ):
     profile = (
         db.query(Scan)
-        .filter(
-            Scan.idprofile
-            == idprofile
-        )
+        .filter(Scan.idprofile == idprofile)
         .first()
     )
     return {
-        "idprofile":
-            idprofile,
-        "exists":
-            profile is not None,
+        "idprofile": idprofile,
+        "exists": profile is not None,
     }
+
 
 # ============================================================
 # GET PROFILE
 # ============================================================
-@app.get(
-    "/api/v1/scan/{idprofile}"
-)
+@app.get("/api/v1/scan/{idprofile}")
 def get_scan(
     idprofile: str,
     db: Session = Depends(get_db),
 ):
-    scan = get_profile_or_404(
-        db,
-        idprofile,
-    )
+    scan = get_profile_or_404(db, idprofile)
     return {
-        "id":
-            scan.id,
-        "idprofile":
-            scan.idprofile,
-        "discussion_data":
-            scan.discussion_data,
-        "created_at":
-            scan.created_at,
-        "updated_at":
-            scan.updated_at,
+        "id": scan.id,
+        "idprofile": scan.idprofile,
+        "discussion_data": scan.discussion_data,
+        "created_at": scan.created_at,
+        "updated_at": scan.updated_at,
     }
+
 
 # ============================================================
 # UPDATE PROFILE
 # ============================================================
-@app.put(
-    "/api/v1/scan/{idprofile}"
-)
+@app.put("/api/v1/scan/{idprofile}")
 def update_scan(
     idprofile: str,
     payload: ScanUpdate,
     db: Session = Depends(get_db),
 ):
-    scan = get_profile_or_404(
-        db,
-        idprofile,
-    )
-    scan.discussion_data = (
-        payload.discussion_data
-    )
+    scan = get_profile_or_404(db, idprofile)
+    scan.discussion_data = payload.discussion_data
     try:
         db.commit()
-        db.refresh(
-            scan
-        )
+        db.refresh(scan)
     except Exception as e:
         db.rollback()
         print(
-            "[DATABASE][UPDATE] "
-            f"{type(e).__name__}: {e}",
+            f"[DATABASE][UPDATE] {type(e).__name__}: {e}",
             flush=True,
         )
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Impossible de mettre "
-                "à jour le profil"
-            ),
+            detail="Impossible de mettre à jour le profil",
         )
     return {
         "success": True,
-        "message":
-            "Profil mis à jour",
-        "idprofile":
-            scan.idprofile,
+        "message": "Profil mis à jour",
+        "idprofile": scan.idprofile,
     }
+
 
 # ============================================================
 # DELETE PROFILE
 # ============================================================
-#
-# IMPORTANT :
-#
-# Cette suppression ne touche JAMAIS Historique.
-#
-# Elle supprime uniquement le profil temporaire Scan.
-#
-# Si les deux profils du match ont disparu, le MatchResult
-# temporaire est également supprimé.
-# ============================================================
-@app.delete(
-    "/api/v1/scan/{idprofile}"
-)
+@app.delete("/api/v1/scan/{idprofile}")
 def delete_scan(
     idprofile: str,
     db: Session = Depends(get_db),
 ):
-    scan = get_profile_or_404(
-        db,
-        idprofile,
-    )
-    print(
-        "[PROFILE DELETE] "
-        f"{idprofile}",
-        flush=True,
-    )
+    scan = get_profile_or_404(db, idprofile)
+    print(f"[PROFILE DELETE] {idprofile}", flush=True)
     try:
-        db.delete(
-            scan
-        )
+        db.delete(scan)
         db.flush()
-        # ----------------------------------------------------
-        # Nettoyage éventuel du résultat temporaire.
-        #
-        # Historique n'est PAS touché.
-        # ----------------------------------------------------
-        cleanup_finished_matches(
-            db,
-            idprofile,
-        )
+        cleanup_finished_matches(db, idprofile)
         db.commit()
     except Exception as e:
         db.rollback()
         print(
-            "[DATABASE][DELETE] "
-            f"{type(e).__name__}: {e}",
+            f"[DATABASE][DELETE] {type(e).__name__}: {e}",
             flush=True,
         )
         traceback.print_exc()
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Impossible de supprimer "
-                "le profil"
-            ),
+            detail="Impossible de supprimer le profil",
         )
     return {
         "success": True,
-        "message":
-            "Profil supprimé",
-        "idprofile":
-            idprofile,
+        "message": "Profil supprimé",
+        "idprofile": idprofile,
     }
+
 
 # ============================================================
 # VERIFY MATCH
 # ============================================================
-@app.post(
-    "/api/v1/match/verify"
-)
+@app.post("/api/v1/match/verify")
 def verify_match(
     payload: MatchRequest,
     db: Session = Depends(get_db),
 ):
     my_profile = (
         db.query(Scan)
-        .filter(
-            Scan.idprofile
-            == payload.my_profile_id
-        )
+        .filter(Scan.idprofile == payload.my_profile_id)
         .first()
     )
     scanned_profile = (
         db.query(Scan)
-        .filter(
-            Scan.idprofile
-            == payload.scanned_profile_id
-        )
+        .filter(Scan.idprofile == payload.scanned_profile_id)
         .first()
     )
     return {
@@ -832,11 +644,10 @@ def verify_match(
             my_profile is not None
             and scanned_profile is not None
         ),
-        "my_profile_exists":
-            my_profile is not None,
-        "scanned_profile_exists":
-            scanned_profile is not None,
+        "my_profile_exists": my_profile is not None,
+        "scanned_profile_exists": scanned_profile is not None,
     }
+
 
 # ============================================================
 # PROMPT DEEP MATCHING
@@ -1046,123 +857,62 @@ Aucun texte après le JSON.
 PROFIL A
 ============================================================
 
-{json.dumps(
-    profile_a,
-    ensure_ascii=False,
-    indent=2,
-    default=str,
-)}
+{json.dumps(profile_a, ensure_ascii=False, indent=2, default=str)}
 
 ============================================================
 PROFIL B
 ============================================================
 
-{json.dumps(
-    profile_b,
-    ensure_ascii=False,
-    indent=2,
-    default=str,
-)}
+{json.dumps(profile_b, ensure_ascii=False, indent=2, default=str)}
 """
+
 
 # ============================================================
 # ANALYSE MATCH
 # ============================================================
-@app.post(
-    "/api/v1/match"
-)
+@app.post("/api/v1/match")
 def analyze_match(
     payload: MatchRequest,
     db: Session = Depends(get_db),
 ):
-    # --------------------------------------------------------
-    # GROQ
-    # --------------------------------------------------------
-    if (
-        not GROQ_API_KEY
-        or groq_client is None
-    ):
+    # Vérification GROQ
+    if not GROQ_API_KEY or groq_client is None:
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Service d'analyse IA "
-                "non configuré"
-            ),
+            detail="Service d'analyse IA non configuré",
         )
 
-    # --------------------------------------------------------
-    # AUTO MATCH
-    # --------------------------------------------------------
-    if (
-        payload.my_profile_id
-        == payload.scanned_profile_id
-    ):
+    # Auto match
+    if payload.my_profile_id == payload.scanned_profile_id:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Un profil ne peut pas "
-                "être comparé à lui-même"
-            ),
+            detail="Un profil ne peut pas être comparé à lui-même",
         )
 
-    # --------------------------------------------------------
-    # RÉCUPÉRATION DES PROFILS
-    # --------------------------------------------------------
-    profile_a = get_profile_or_404(
-        db,
-        payload.my_profile_id,
-    )
-    profile_b = get_profile_or_404(
-        db,
-        payload.scanned_profile_id,
-    )
-    data_a = (
-        profile_a.discussion_data
-        or {}
-    )
-    data_b = (
-        profile_b.discussion_data
-        or {}
-    )
+    # Récupération des profils
+    profile_a = get_profile_or_404(db, payload.my_profile_id)
+    profile_b = get_profile_or_404(db, payload.scanned_profile_id)
+    data_a = profile_a.discussion_data or {}
+    data_b = profile_b.discussion_data or {}
 
     print(
         "================================================",
         flush=True,
     )
-    print(
-        "[MATCH]",
-        flush=True,
-    )
-    print(
-        f"A = {payload.my_profile_id}",
-        flush=True,
-    )
-    print(
-        f"B = {payload.scanned_profile_id}",
-        flush=True,
-    )
+    print("[MATCH]", flush=True)
+    print(f"A = {payload.my_profile_id}", flush=True)
+    print(f"B = {payload.scanned_profile_id}", flush=True)
     print(
         "================================================",
         flush=True,
     )
 
-    # --------------------------------------------------------
-    # PROMPT
-    # --------------------------------------------------------
-    prompt = build_match_prompt(
-        data_a,
-        data_b,
-    )
+    # Prompt
+    prompt = build_match_prompt(data_a, data_b)
 
-    # --------------------------------------------------------
     # GROQ
-    # --------------------------------------------------------
     try:
-        print(
-            "[GROQ] "
-            f"Model: {GROQ_MODEL}",
-            flush=True,
-        )
+        print(f"[GROQ] Model: {GROQ_MODEL}", flush=True)
         completion = (
             groq_client
             .chat
@@ -1171,207 +921,93 @@ def analyze_match(
                 model=GROQ_MODEL,
                 messages=[
                     {
-                        "role":
-                            "system",
-                        "content":
-                            (
-                                "Analyse les deux "
-                                "profils relationnels. "
-                                "Retourne uniquement "
-                                "le JSON demandé."
-                            ),
+                        "role": "system",
+                        "content": (
+                            "Analyse les deux profils relationnels. "
+                            "Retourne uniquement le JSON demandé."
+                        ),
                     },
                     {
-                        "role":
-                            "user",
-                        "content":
-                            prompt,
+                        "role": "user",
+                        "content": prompt,
                     },
                 ],
                 temperature=0.1,
-                response_format={
-                    "type":
-                        "json_object"
-                },
+                response_format={"type": "json_object"},
             )
         )
         if not completion.choices:
-            raise ValueError(
-                "Aucun résultat Groq"
-            )
-        content = (
-            completion
-            .choices[0]
-            .message
-            .content
-        )
+            raise ValueError("Aucun résultat Groq")
+        content = completion.choices[0].message.content
         if not content:
-            raise ValueError(
-                "Réponse Groq vide"
-            )
-        print(
-            "[GROQ][RAW] "
-            f"{content}",
-            flush=True,
-        )
-        result = json.loads(
-            content
-        )
-        if not isinstance(
-            result,
-            dict,
-        ):
-            raise ValueError(
-                "Format JSON Groq invalide"
-            )
+            raise ValueError("Réponse Groq vide")
+        print(f"[GROQ][RAW] {content}", flush=True)
+        result = json.loads(content)
+        if not isinstance(result, dict):
+            raise ValueError("Format JSON Groq invalide")
     except Exception as e:
-        print(
-            "================================",
-            flush=True,
-        )
-        print(
-            "[GROQ ERROR]",
-            flush=True,
-        )
-        print(
-            f"Type: {type(e).__name__}",
-            flush=True,
-        )
-        print(
-            f"Message: {e}",
-            flush=True,
-        )
+        print("================================", flush=True)
+        print("[GROQ ERROR]", flush=True)
+        print(f"Type: {type(e).__name__}", flush=True)
+        print(f"Message: {e}", flush=True)
         traceback.print_exc()
-        print(
-            "================================",
-            flush=True,
-        )
+        print("================================", flush=True)
         raise HTTPException(
             status_code=502,
-            detail=(
-                "Impossible d'effectuer "
-                "l'analyse de compatibilité"
-            ),
+            detail="Impossible d'effectuer l'analyse de compatibilité",
         )
 
-    # ========================================================
-    # SCORES
-    # ========================================================
-    match_a_to_b = clamp_score(
-        result.get(
-            "a_to_b",
-            0,
-        )
-    )
-    match_b_to_a = clamp_score(
-        result.get(
-            "b_to_a",
-            0,
-        )
-    )
+    # Scores
+    match_a_to_b = clamp_score(result.get("a_to_b", 0))
+    match_b_to_a = clamp_score(result.get("b_to_a", 0))
 
-    # ========================================================
-    # TENSIONS INTERNES
-    # ========================================================
-    raw_tensions = result.get(
-        "tensions",
-        [],
-    )
+    # Tensions
+    raw_tensions = result.get("tensions", [])
     tensions: List[str] = []
-    if isinstance(
-        raw_tensions,
-        list,
-    ):
+    if isinstance(raw_tensions, list):
         for item in raw_tensions:
-            tension = (
-                str(item)
-                .strip()
-                .lower()
-            )
+            tension = str(item).strip().lower()
             if (
-                tension                in ALLOWED_TENSIONS
-                and tension
-                not in tensions
+                tension in ALLOWED_TENSIONS
+                and tension not in tensions
             ):
-                tensions.append(
-                    tension
-                )
+                tensions.append(tension)
 
-    # ========================================================
-    # MATCH ID
-    # ========================================================
-    match_id = (
-        "DM-"
-        + uuid.uuid4()
-        .hex
-        .upper()
-    )
+    # Match ID
+    match_id = "DM-" + uuid.uuid4().hex.upper()
 
-    # ========================================================
-    # MATCH RESULT TEMPORAIRE
-    # ========================================================
+    # MatchResult
     match_result = MatchResult(
-        match_id=
-            match_id,
-        profile_a_id=
-            payload.my_profile_id,
-        profile_b_id=
-            payload.scanned_profile_id,
-        match_a_to_b=
-            match_a_to_b,
-        match_b_to_a=
-            match_b_to_a,
-        tensions=
-            tensions,
+        match_id=match_id,
+        profile_a_id=payload.my_profile_id,
+        profile_b_id=payload.scanned_profile_id,
+        match_a_to_b=match_a_to_b,
+        match_b_to_a=match_b_to_a,
+        tensions=tensions,
         summary=None,
         scanner_received=False,
         owner_received=False,
     )
 
-    # ========================================================
-    # INFORMATIONS POUR HISTORIQUE
-    # ========================================================
-    info_a = extract_general_information(
-        data_a
-    )
-    info_b = extract_general_information(
-        data_b
-    )
+    # Informations pour historique
+    info_a = extract_general_information(data_a)
+    info_b = extract_general_information(data_b)
 
-    # ========================================================
-    # HISTORIQUE ADMINISTRATEUR
-    # ========================================================
+    # Historique
     historique = Historique(
-        my_gender=
-            info_a["gender"],
-        scanned_gender=
-            info_b["gender"],
-        my_orientation=
-            info_a["orientation"],
-        scanned_orientation=
-            info_b["orientation"],
-        my_country=
-            info_a["country"],
-        scanned_country=
-            info_b["country"],
-        match_my_to_their=
-            match_a_to_b,
-        match_their_to_my=
-            match_b_to_a,
-        conflit=
-            tensions,
+        my_gender=info_a["gender"],
+        scanned_gender=info_b["gender"],
+        my_orientation=info_a["orientation"],
+        scanned_orientation=info_b["orientation"],
+        my_country=info_a["country"],
+        scanned_country=info_b["country"],
+        match_my_to_their=match_a_to_b,
+        match_their_to_my=match_b_to_a,
+        conflit=tensions,
     )
 
-    # ========================================================
-    # ENREGISTREMENT
-    # ========================================================
+    # Enregistrement MatchResult (CRITIQUE)
     try:
-        # ----------------------------------------------------
-        # 1. Enregistrement du résultat temporaire (CRITIQUE)
-        #
-        # C'est ce résultat qui est indispensable pour que
-        # les deux téléphones puissent récupérer leur analyse.
-        # ----------------------------------------------------
         db.add(match_result)
         db.commit()
         db.refresh(match_result)
@@ -1379,7 +1015,6 @@ def analyze_match(
             f"[DATABASE][MATCH] MatchResult enregistré : {match_id}",
             flush=True,
         )
-
     except Exception as e:
         db.rollback()
         print(
@@ -1397,24 +1032,15 @@ def analyze_match(
             ),
         )
 
+    # Enregistrement Historique (NON CRITIQUE)
     try:
-        # ----------------------------------------------------
-        # 2. Enregistrement de l'historique (NON CRITIQUE)
-        #
-        # Cette table est réservée à l'administrateur.
-        # Si son écriture échoue, cela ne doit PAS empêcher
-        # l'utilisateur de recevoir son résultat.
-        # ----------------------------------------------------
         db.add(historique)
         db.commit()
         print(
             f"[DATABASE][HISTORIQUE] Ligne enregistrée pour {match_id}",
             flush=True,
         )
-
     except Exception as e:
-        # On annule uniquement l'insertion dans historique,
-        # pas celle de match_result.
         db.rollback()
         print(
             "[DATABASE][HISTORIQUE] ERREUR (non bloquante) : "
@@ -1422,63 +1048,35 @@ def analyze_match(
             flush=True,
         )
         traceback.print_exc()
-        # On ne relance PAS d'exception ici.
 
-    print(
-        "[MATCH SAVED]",
-        flush=True,
-    )
-    print(
-        f"Match ID : {match_id}",
-        flush=True,
-    )
-    print(
-        f"A -> B : {match_a_to_b}%",
-        flush=True,
-    )
-    print(
-        f"B -> A : {match_b_to_a}%",
-        flush=True,
-    )
-    print(
-        f"Tensions : {tensions}",
-        flush=True,
-    )
-    # ========================================================
-    # RÉSULTAT POUR LE SCANNER
-    # ========================================================
+    print("[MATCH SAVED]", flush=True)
+    print(f"Match ID : {match_id}", flush=True)
+    print(f"A -> B : {match_a_to_b}%", flush=True)
+    print(f"B -> A : {match_b_to_a}%", flush=True)
+    print(f"Tensions : {tensions}", flush=True)
+
+    # Réponse pour le scanner
     response = build_viewer_result(
         match_result,
         payload.my_profile_id,
         payload.language,
     )
-
-    print(
-        "[MATCH][SCANNER RESPONSE]",
-        flush=True,
-    )
-    print(
-        response,
-        flush=True,
-    )
+    print("[MATCH][SCANNER RESPONSE]", flush=True)
+    print(response, flush=True)
     return response
+
 
 # ============================================================
 # MARQUER UN MATCH COMME REÇU
 # ============================================================
-@app.post(
-    "/api/v1/match/received"
-)
+@app.post("/api/v1/match/received")
 def mark_match_received(
     payload: MatchReceivedRequest,
     db: Session = Depends(get_db),
 ):
     result = (
         db.query(MatchResult)
-        .filter(
-            MatchResult.match_id
-            == payload.match_id
-        )
+        .filter(MatchResult.match_id == payload.match_id)
         .first()
     )
     if result is None:
@@ -1487,21 +1085,16 @@ def mark_match_received(
             detail="Match introuvable",
         )
 
-    # --------------------------------------------------------
-    # Mise à jour de l'indicateur de réception
-    # --------------------------------------------------------
     if payload.viewer_profile_id == result.profile_a_id:
         result.scanner_received = True
         print(
-            f"[MATCH RECEIVED] Scanner "
-            f"a reçu {payload.match_id}",
+            f"[MATCH RECEIVED] Scanner a reçu {payload.match_id}",
             flush=True,
         )
     elif payload.viewer_profile_id == result.profile_b_id:
         result.owner_received = True
         print(
-            f"[MATCH RECEIVED] Owner "
-            f"a reçu {payload.match_id}",
+            f"[MATCH RECEIVED] Owner a reçu {payload.match_id}",
             flush=True,
         )
     else:
@@ -1510,14 +1103,9 @@ def mark_match_received(
             detail="Profil non autorisé pour ce match",
         )
 
-    # --------------------------------------------------------
-    # Si les deux ont reçu le résultat, on supprime
-    # le MatchResult temporaire.
-    # --------------------------------------------------------
     if result.scanner_received and result.owner_received:
         print(
-            f"[MATCH CONSUMED] "
-            f"Suppression de {result.match_id}",
+            f"[MATCH CONSUMED] Suppression de {result.match_id}",
             flush=True,
         )
         db.delete(result)
@@ -1533,78 +1121,38 @@ def mark_match_received(
 
     return {"success": True}
 
+
 # ============================================================
 # DERNIER MATCH D'UN PROFIL
 # ============================================================
-#
-# Cette route est utilisée par le propriétaire du QR.
-#
-# IMPORTANT :
-#
-# Elle lit UNIQUEMENT MatchResult.
-#
-# Elle ne lit JAMAIS Historique.
-#
-# Elle ne retourne un résultat que si :
-#
-# 1. Le profil existe encore (Scan).
-# 2. Un MatchResult existe pour ce profil.
-# 3. Le propriétaire du QR n'a pas encore reçu ce résultat
-#    (owner_received == False).
-#
-# ============================================================
-@app.get(
-    "/api/v1/profile/{viewer_profile_id}/latest-match"
-)
+@app.get("/api/v1/profile/{viewer_profile_id}/latest-match")
 def get_latest_match(
     viewer_profile_id: str,
-    language: str = Query(
-        default="fr",
-    ),
+    language: str = Query(default="fr"),
     db: Session = Depends(get_db),
 ):
-    # --------------------------------------------------------
-    # Le profil doit encore exister.
-    # --------------------------------------------------------
     profile_exists = (
         db.query(Scan)
-        .filter(
-            Scan.idprofile
-            == viewer_profile_id
-        )
+        .filter(Scan.idprofile == viewer_profile_id)
         .first()
         is not None
     )
     if not profile_exists:
         print(
-            "[LATEST MATCH] "
-            f"Profil absent : {viewer_profile_id}",
+            f"[LATEST MATCH] Profil absent : {viewer_profile_id}",
             flush=True,
         )
-        return {
-            "success":
-                True,
-            "found":
-                False,
-        }
+        return {"success": True, "found": False}
 
-    # --------------------------------------------------------
-    # Recherche du dernier résultat temporaire
-    # --------------------------------------------------------
     result = (
         db.query(MatchResult)
         .filter(
             or_(
-                MatchResult.profile_a_id
-                == viewer_profile_id,
-                MatchResult.profile_b_id
-                == viewer_profile_id,
+                MatchResult.profile_a_id == viewer_profile_id,
+                MatchResult.profile_b_id == viewer_profile_id,
             )
         )
-        .filter(
-            # Le propriétaire du QR (B) n'a pas encore reçu le résultat
-            MatchResult.owner_received == False
-        )
+        .filter(MatchResult.owner_received == False)
         .order_by(
             MatchResult.created_at.desc(),
             MatchResult.id.desc(),
@@ -1614,69 +1162,41 @@ def get_latest_match(
 
     if result is None:
         print(
-            "[LATEST MATCH] "
-            f"Aucun résultat pour "
-            f"{viewer_profile_id}",
+            f"[LATEST MATCH] Aucun résultat pour {viewer_profile_id}",
             flush=True,
         )
-        return {
-            "success":
-                True,
-            "found":
-                False,
-        }
+        return {"success": True, "found": False}
 
-    # --------------------------------------------------------
-    # Construction selon la langue du téléphone
-    # --------------------------------------------------------
     viewer_result = build_viewer_result(
         result,
         viewer_profile_id,
         language,
     )
-
     viewer_result["found"] = True
 
+    print("[LATEST MATCH]", flush=True)
+    print(f"PROFILE : {viewer_profile_id}", flush=True)
+    print(f"MATCH : {result.match_id}", flush=True)
     print(
-        "[LATEST MATCH]",
+        f"LANGUAGE : {normalize_language(language)}",
         flush=True,
     )
-    print(
-        f"PROFILE : {viewer_profile_id}",
-        flush=True,
-    )
-    print(
-        f"MATCH : {result.match_id}",
-        flush=True,
-    )
-    print(
-        f"LANGUAGE : "
-        f"{normalize_language(language)}",
-        flush=True,
-    )
-
     return viewer_result
+
 
 # ============================================================
 # RÉCUPÉRER UN MATCH PRÉCIS
 # ============================================================
-@app.get(
-    "/api/v1/match/{match_id}/{viewer_profile_id}"
-)
+@app.get("/api/v1/match/{match_id}/{viewer_profile_id}")
 def get_match_result(
     match_id: str,
     viewer_profile_id: str,
-    language: str = Query(
-        default="fr",
-    ),
+    language: str = Query(default="fr"),
     db: Session = Depends(get_db),
 ):
     result = (
         db.query(MatchResult)
-        .filter(
-            MatchResult.match_id
-            == match_id
-        )
+        .filter(MatchResult.match_id == match_id)
         .first()
     )
     if result is None:
@@ -1685,25 +1205,16 @@ def get_match_result(
             detail="Match introuvable",
         )
 
-    # --------------------------------------------------------
-    # Vérification que le profil existe encore.
-    # --------------------------------------------------------
     viewer_exists = (
         db.query(Scan)
-        .filter(
-            Scan.idprofile
-            == viewer_profile_id
-        )
+        .filter(Scan.idprofile == viewer_profile_id)
         .first()
         is not None
     )
     if not viewer_exists:
         raise HTTPException(
             status_code=404,
-            detail=(
-                "Profil utilisateur "
-                "introuvable"
-            ),
+            detail="Profil utilisateur introuvable",
         )
 
     return build_viewer_result(
